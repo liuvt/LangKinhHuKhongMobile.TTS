@@ -26,22 +26,23 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddPhotoAlternate
-import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FileDownload
-import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.OndemandVideo
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Speed
@@ -51,6 +52,7 @@ import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -62,6 +64,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -104,8 +107,6 @@ import vn.langkinhhukhong.tts.model.ShortVideoTrack
 import vn.langkinhhukhong.tts.model.SubtitleOverlayStyle
 import vn.langkinhhukhong.tts.model.TimelineSubtitleToken
 import vn.langkinhhukhong.tts.ui.components.MultiTrackTimeline
-import vn.langkinhhukhong.tts.ui.components.RewardedSponsorAdDialog
-import vn.langkinhhukhong.tts.ui.components.VoiceLibrarySheet
 import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -118,7 +119,6 @@ fun CapCutTtsEditorScreen(
     val activity = context as? Activity
 
     var showTtsSheet by remember { mutableStateOf(false) }
-    var showVoiceLibrarySheet by remember { mutableStateOf(false) }
     var showTextCreatorSheet by remember { mutableStateOf(false) }
     var showLogoCreatorSheet by remember { mutableStateOf(false) }
     var showVideoEditBar by remember { mutableStateOf(false) }
@@ -140,35 +140,28 @@ fun CapCutTtsEditorScreen(
         }
     }
 
-    val secondaryMp3PickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetMultipleContents()
-    ) { uris: List<Uri> ->
-        if (uris.isNotEmpty()) {
-            uris.forEach { viewModel.importSecondaryMp3(it) }
-        }
-    }
-
     Surface(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .systemBarsPadding(),
         color = Color(0xFF0B0D13)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // 1. THANH TIÊU ĐỀ TRÊN CÙNG (Nạp Video 9:16 <= 3p, Bật/Tắt tiếng Video, Xuất MP4)
+            // 1. THANH HEADER GỌN GÀNG (Nạp Video 9:16 <= 3p, Bật/Tắt tiếng MP4, Xuất MP4)
             TopEditorHeader(
                 videoTrack = state.videoTrack,
-                totalAdsWatched = state.totalAdsWatched,
                 isExporting = state.isExportingVideo,
                 onPickVideo = { videoPickerLauncher.launch("video/*") },
                 onToggleMuteVideo = { viewModel.toggleMuteOriginalVideo() },
                 onExport = { viewModel.exportFinalVideo(activity) }
             )
 
-            // 2. KHU VIEW XEM TRƯỚC VIDEO DỌC 9:16 + KÉO THẢ TỰ DO (PHỤ ĐỀ + CHỮ TEXT + ICON LOGO PNG)
+            // 2. KHU VIEW 9:16 RỘNG RÃI (Cho phép kéo thả vị trí bất kỳ: Phụ đề, Text, Logo PNG)
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
-                    .padding(vertical = 4.dp),
+                    .padding(vertical = 6.dp, horizontal = 12.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Vertical9By16PreviewStage(
@@ -187,7 +180,7 @@ fun CapCutTtsEditorScreen(
                 )
             }
 
-            // 3. THANH CHỈNH NHANH LÀM MỜ (OPACITY & BLUR) KHI ĐANG CHỌN TEXT HOẶC LOGO PNG
+            // 3. THANH CHỈNH NHANH LÀM MỜ (OPACITY & BLUR) KHI CHẠM CHỌN TEXT HOẶC LOGO PNG
             val selectedText = state.selectedTextOverlay
             val selectedImage = state.selectedImageOverlay
             if (selectedText != null) {
@@ -206,7 +199,7 @@ fun CapCutTtsEditorScreen(
                 )
             }
 
-            // 4. THANH CẮT NGẮN VIDEO MP4 + BẬT/TẮT TIẾNG GỐC + TỐC ĐỘ VIDEO
+            // 4. THANH CẮT NGẮN VIDEO MP4 + BẬT/TẮT TIẾNG GỐC + TỐC ĐỘ (Chỉ mở khi bấm nút 'Cắt Video/Âm')
             if (showVideoEditBar) {
                 VideoTrimAndAudioControlBar(
                     videoTrack = state.videoTrack,
@@ -218,7 +211,7 @@ fun CapCutTtsEditorScreen(
                 )
             }
 
-            // 5. THANH TRẠNG THÁI & THỜI GIAN PLAYHEAD + ĐIỀU KHIỂN PHÁT
+            // 5. THANH PLAY/PAUSE & THỜI GIAN PLAYHEAD
             PlaybackTransportBar(
                 playheadMs = state.playheadMs,
                 totalDurationMs = state.totalTimelineDurationMs,
@@ -227,13 +220,12 @@ fun CapCutTtsEditorScreen(
                 onTogglePlay = { viewModel.togglePlayPause() }
             )
 
-            // 6. THANH TIMELINE ĐA TẦNG DẠNG PART (CAPCUT STYLE)
+            // 6. THANH TIMELINE DẠNG PART (Video 9:16 + Voice&Sub + Text&Logo PNG)
             MultiTrackTimeline(
                 videoTrack = state.videoTrack,
                 voiceClips = state.voiceClips,
                 textOverlays = state.textOverlays,
                 imageOverlays = state.imageOverlays,
-                secondaryMp3Clips = state.secondaryMp3Clips,
                 totalDurationMs = state.totalTimelineDurationMs,
                 playheadMs = state.playheadMs,
                 selectedClipId = state.selectedClipId,
@@ -251,29 +243,26 @@ fun CapCutTtsEditorScreen(
                 },
                 onDragImageOverlay = { id, deltaMs ->
                     viewModel.moveImageOverlayOnTimeline(id, deltaMs)
-                },
-                onDragSecondaryMp3 = { clipId, deltaMs ->
-                    viewModel.moveSecondaryMp3ByDelta(clipId, deltaMs)
                 }
             )
 
-            // 7. THANH CÔNG CỤ CAPCUT DƯỚI CÙNG
+            // 7. THANH CÔNG CỤ DƯỚI CÙNG (6 NÚT CỐT LÕI, KHÔNG TÍNH NĂNG THỪA)
             BottomCapCutToolbar(
                 onOpenTtsCreator = { showTtsSheet = true },
-                onOpenVoiceLibrary = { showVoiceLibrarySheet = true },
                 onSplitAtPlayhead = { viewModel.splitSelectedOrActiveClipAtPlayhead() },
+                onToggleVideoEditBar = { showVideoEditBar = !showVideoEditBar },
                 onOpenTextOverlaySheet = { showTextCreatorSheet = true },
                 onOpenLogoPngSheet = { showLogoCreatorSheet = true },
-                onToggleVideoEditBar = { showVideoEditBar = !showVideoEditBar },
-                onImportSecondaryMp3 = { secondaryMp3PickerLauncher.launch("audio/*") },
                 onDeleteSelected = { viewModel.deleteSelectedClip() }
             )
         }
 
-        // BẢNG 1: CHUYỂN TEXT THÀNH VOICE AI + TỰ ĐỘNG TẠO SUB PHỤ ĐỀ KÈM THEO
+        // BẢNG 1: CHUYỂN TEXT THÀNH VOICE + TỰ ĐỘNG TẠO SUB PHỤ ĐỀ KÈM THEO
         if (showTtsSheet) {
+            val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
             ModalBottomSheet(
-                onDismissRequest = { showTtsSheet = false },
+                onDismissRequest = { if (!state.isSynthesizingTts) showTtsSheet = false },
+                sheetState = sheetState,
                 containerColor = Color(0xFF161924)
             ) {
                 OfflineTtsCreatorSheet(
@@ -283,61 +272,25 @@ fun CapCutTtsEditorScreen(
                     speechRate = state.ttsSpeechRate,
                     isSynthesizing = state.isSynthesizingTts,
                     onSelectVoice = { viewModel.selectVoiceProfile(it) },
-                    onOpenVoiceLibrary = {
-                        showTtsSheet = false
-                        showVoiceLibrarySheet = true
-                    },
-                    onWatchAdTopUp = { voice ->
-                        viewModel.requestWatchAdForVoice(activity, voice)
-                    },
+                    onPreviewVoice = { viewModel.previewVoiceSample(it) },
                     onTextChange = { viewModel.updateTtsInputText(it) },
                     onSpeechRateChange = { viewModel.updateTtsSpeechRate(it) },
                     onRenderTts = {
-                        viewModel.renderOfflineTtsAndAttachSubtitle(activity)
-                        if (state.selectedVoiceProfile.isReadyToRender) {
-                            showTtsSheet = false
-                        }
+                        viewModel.renderOfflineTtsAndAttachSubtitle(
+                            activity = activity,
+                            onComplete = { showTtsSheet = false }
+                        )
                     }
                 )
             }
         }
 
-        // BẢNG 2: THƯ VIỆN GIỌNG ĐỌC ONLINE (Tích hợp Quảng cáo Banner & Rewarded Video Ad)
-        if (showVoiceLibrarySheet) {
-            ModalBottomSheet(
-                onDismissRequest = { showVoiceLibrarySheet = false },
-                containerColor = Color(0xFF141824)
-            ) {
-                VoiceLibrarySheet(
-                    voiceCatalog = state.voiceCatalog,
-                    selectedVoiceId = state.selectedVoiceProfile.id,
-                    monetizationConfig = state.monetizationConfig,
-                    totalAdsWatched = state.totalAdsWatched,
-                    onSelectVoice = { profile ->
-                        viewModel.selectVoiceProfile(profile)
-                        showVoiceLibrarySheet = false
-                        showTtsSheet = true
-                    },
-                    onWatchAdToDownloadOrTopUp = { profile ->
-                        viewModel.requestWatchAdForVoice(activity, profile)
-                    },
-                    onPreviewVoice = { profile ->
-                        viewModel.previewVoiceSample(profile)
-                    },
-                    onDeleteVoice = { profile ->
-                        viewModel.deleteDownloadedVoice(profile)
-                    },
-                    onRefreshOnlineCatalog = {
-                        viewModel.syncOnlineVoiceCatalog()
-                    }
-                )
-            }
-        }
-
-        // BẢNG 3: THÊM CHỮ (TEXT OVERLAY) + LÀM MỜ OPACITY/BLUR
+        // BẢNG 2: THÊM CHỮ (TEXT OVERLAY) + LÀM MỜ
         if (showTextCreatorSheet) {
+            val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
             ModalBottomSheet(
                 onDismissRequest = { showTextCreatorSheet = false },
+                sheetState = sheetState,
                 containerColor = Color(0xFF161924)
             ) {
                 AddTextOverlaySheet(
@@ -355,10 +308,12 @@ fun CapCutTtsEditorScreen(
             }
         }
 
-        // BẢNG 4: THÊM ICON / LOGO PNG + LÀM MỜ OPACITY/BLUR
+        // BẢNG 3: THÊM ICON / LOGO PNG + LÀM MỜ
         if (showLogoCreatorSheet) {
+            val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
             ModalBottomSheet(
                 onDismissRequest = { showLogoCreatorSheet = false },
+                sheetState = sheetState,
                 containerColor = Color(0xFF161924)
             ) {
                 AddLogoPngOverlaySheet(
@@ -372,28 +327,12 @@ fun CapCutTtsEditorScreen(
                 )
             }
         }
-
-        // TRÌNH PHÁT VIDEO QUẢNG CÁO CÓ THƯỞNG
-        val pendingVoice = state.pendingAdVoiceTarget
-        if (pendingVoice != null) {
-            RewardedSponsorAdDialog(
-                voiceTarget = pendingVoice,
-                monetizationConfig = state.monetizationConfig,
-                onAdCompletedRewardGranted = {
-                    viewModel.onUserCompletedWatchingAd(pendingVoice)
-                },
-                onCancelAd = {
-                    viewModel.dismissSponsorAdDialog()
-                }
-            )
-        }
     }
 }
 
 @Composable
 private fun TopEditorHeader(
     videoTrack: ShortVideoTrack,
-    totalAdsWatched: Int,
     isExporting: Boolean,
     onPickVideo: () -> Unit,
     onToggleMuteVideo: () -> Unit,
@@ -403,13 +342,13 @@ private fun TopEditorHeader(
         modifier = Modifier
             .fillMaxWidth()
             .background(Color(0xFF141722))
-            .padding(horizontal = 10.dp, vertical = 8.dp),
+            .padding(horizontal = 10.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = "Lăng Kính Hư Không • CapCut TTS Studio",
+                text = "CapCut Voice & Sub Editor",
                 color = Color.White,
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Bold,
@@ -417,8 +356,8 @@ private fun TopEditorHeader(
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                text = "9:16 (≤ 3p) • ${EditorViewModel.formatMs(videoTrack.effectiveDurationMs)} • ${videoTrack.speedMultiplier}x • QC: $totalAdsWatched",
-                color = Color(0xFFFFD54F),
+                text = "Khung 9:16 (≤ 3p) • Độ dài: ${EditorViewModel.formatMs(videoTrack.effectiveDurationMs)}",
+                color = Color(0xFF80D8FF),
                 fontSize = 10.sp
             )
         }
@@ -427,7 +366,6 @@ private fun TopEditorHeader(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Nút Tắt/Bật nhanh tiếng gốc của Video MP4
             IconButton(
                 onClick = onToggleMuteVideo,
                 modifier = Modifier
@@ -441,7 +379,7 @@ private fun TopEditorHeader(
                     imageVector = if (videoTrack.muteOriginalAudio) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
                     contentDescription = "Tắt/Bật tiếng Video MP4",
                     tint = Color.White,
-                    modifier = Modifier.size(17.dp)
+                    modifier = Modifier.size(16.dp)
                 )
             }
 
@@ -456,7 +394,7 @@ private fun TopEditorHeader(
                     modifier = Modifier.size(15.dp)
                 )
                 Spacer(modifier = Modifier.width(4.dp))
-                Text("Nạp MP4 9:16", color = Color.White, fontSize = 11.sp)
+                Text("Chọn MP4 9:16", color = Color.White, fontSize = 11.sp)
             }
 
             Button(
@@ -478,12 +416,8 @@ private fun TopEditorHeader(
 }
 
 /**
- * KHU VIEW XEM TRƯỚC VIDEO 9:16 CHUẨN CAPCUT:
- * - Phát Video đã cắt ngắn (trimStartMs..trimEndMs) + tắt/bật tiếng gốc MP4 (muteOriginalAudio).
- * - Cho phép KÉO THẢ VỊ TRÍ BẤT KỲ (2D Drag) trực tiếp đối với:
- *   1. Các lớp Icon / Logo PNG (kèm làm mờ Opacity & Blur)
- *   2. Các lớp Chữ Text Overlay (kèm làm mờ Opacity & Blur)
- *   3. Khung Phụ đề Karaoke đồng bộ theo từng đoạn MP3 Voice
+ * KHU VIEW XEM TRƯỚC VIDEO 9:16:
+ * - Hệ tọa độ kéo thả đồng nhất, hiển thị rõ ràng Video 9:16, Phụ đề Karaoke, Chữ (Text) và Logo PNG.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -508,18 +442,18 @@ private fun Vertical9By16PreviewStage(
         modifier = Modifier
             .fillMaxHeight()
             .aspectRatio(9f / 16f)
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(12.dp))
             .background(
                 Brush.verticalGradient(
                     listOf(Color(0xFF1A1F33), Color(0xFF0E121D), Color(0xFF1D152B))
                 )
             )
-            .border(1.dp, Color(0xFF2E354B), RoundedCornerShape(14.dp))
+            .border(1.5.dp, Color(0xFF343D56), RoundedCornerShape(12.dp))
     ) {
         val stageWidthPx = with(density) { maxWidth.toPx().coerceAtLeast(1f) }
         val stageHeightPx = with(density) { maxHeight.toPx().coerceAtLeast(1f) }
 
-        // 1. LỚP VIDEO MP4 9:16 (Áp dụng cắt ngắn trimStartMs..trimEndMs & tắt/bật tiếng gốc)
+        // 1. LỚP VIDEO MP4 9:16
         if (videoTrack.videoUri.isNotBlank()) {
             val exoPlayer = remember(
                 videoTrack.videoUri,
@@ -585,22 +519,22 @@ private fun Vertical9By16PreviewStage(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = "KHU VIEW 9:16 (≤ 3 PHÚT)",
+                    text = "KHU VIEW 9:16",
                     color = Color(0xFF64FFDA),
-                    fontSize = 13.sp,
+                    fontSize = 14.sp,
                     fontWeight = FontWeight.Bold
                 )
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(6.dp))
                 Text(
-                    text = "Kéo thả Chữ (Text), Logo PNG & Phụ đề đến vị trí bất kỳ trên màn hình này",
-                    color = Color(0xFF9AA5B8),
-                    fontSize = 10.sp,
+                    text = "• Bấm 'Chọn MP4 9:16' để nạp Video (≤ 3p)\n• Bấm 'Tạo Voice+Sub' để chuyển Text thành Giọng đọc\n• Kéo thả Phụ đề, Chữ & Logo PNG tại đây",
+                    color = Color(0xFFB0BEC5),
+                    fontSize = 11.sp,
                     textAlign = TextAlign.Center
                 )
             }
         }
 
-        // 2. CÁC LỚP ICON / LOGO PNG (Hỗ trợ làm mờ Opacity + Blur + Kéo thả vị trí bất kỳ)
+        // 2. CÁC LỚP ICON / LOGO PNG (Kéo thả 2D + Làm mờ Opacity & Blur)
         visibleImageOverlays.forEach { imgItem ->
             val isSelected = imgItem.id == selectedClipId
             val currentOnDragImg by rememberUpdatedState(onDragImageOverlay)
@@ -615,12 +549,12 @@ private fun Vertical9By16PreviewStage(
                 }.getOrNull()
             }
 
-            val sizePx = with(density) { imgItem.sizeDp.dp.toPx() }
-            val offsetX = (imgItem.normalizedX * stageWidthPx - sizePx / 2f).roundToInt()
-            val offsetY = (imgItem.normalizedY * stageHeightPx - sizePx / 2f).roundToInt()
+            val offsetX = ((imgItem.normalizedX - 0.5f) * stageWidthPx).roundToInt()
+            val offsetY = ((imgItem.normalizedY - 0.5f) * stageHeightPx).roundToInt()
 
             Box(
                 modifier = Modifier
+                    .align(Alignment.Center)
                     .offset { IntOffset(offsetX, offsetY) }
                     .size(imgItem.sizeDp.dp)
                     .alpha(imgItem.opacity.coerceIn(0.05f, 1.0f))
@@ -629,7 +563,7 @@ private fun Vertical9By16PreviewStage(
                     }
                     .then(
                         if (isSelected) {
-                            Modifier.border(1.5.dp, Color(0xFF00E5FF), RoundedCornerShape(8.dp))
+                            Modifier.border(2.dp, Color(0xFF00E5FF), RoundedCornerShape(8.dp))
                         } else {
                             Modifier
                         }
@@ -675,7 +609,7 @@ private fun Vertical9By16PreviewStage(
             }
         }
 
-        // 3. CÁC LỚP CHỮ TEXT OVERLAY (Hỗ trợ làm mờ Opacity + Blur + Kéo thả vị trí bất kỳ)
+        // 3. CÁC LỚP CHỮ TEXT OVERLAY (Kéo thả 2D + Làm mờ Opacity & Blur)
         visibleTextOverlays.forEach { textItem ->
             val isSelected = textItem.id == selectedClipId
             val currentOnDragText by rememberUpdatedState(onDragTextOverlay)
@@ -734,11 +668,8 @@ private fun Vertical9By16PreviewStage(
                     .offset { IntOffset(subOffsetX, subOffsetY) }
                     .padding(horizontal = 10.dp)
                     .alpha(subtitleStyle.opacity.coerceIn(0.1f, 1.0f))
-                    .let { mod ->
-                        if (subtitleStyle.blurRadiusDp > 0.5f) mod.blur(subtitleStyle.blurRadiusDp.dp) else mod
-                    }
                     .background(Color(0xCC000000), RoundedCornerShape(10.dp))
-                    .border(1.dp, Color(0x88FFD600), RoundedCornerShape(10.dp))
+                    .border(1.dp, Color(0x99FFD600), RoundedCornerShape(10.dp))
                     .pointerInput(stageWidthPx, stageHeightPx) {
                         detectDragGestures { change, dragAmount ->
                             change.consume()
@@ -748,7 +679,7 @@ private fun Vertical9By16PreviewStage(
                             )
                         }
                     }
-                    .padding(horizontal = 10.dp, vertical = 7.dp)
+                    .padding(horizontal = 10.dp, vertical = 6.dp)
             ) {
                 FlowRow(
                     horizontalArrangement = Arrangement.Center,
@@ -768,9 +699,6 @@ private fun Vertical9By16PreviewStage(
     }
 }
 
-/**
- * Thanh chỉnh nhanh Làm mờ (Opacity + Blur) và Cỡ chữ cho lớp Text đang chọn.
- */
 @Composable
 private fun SelectedTextBlurAndOpacityBar(
     item: CanvasTextOverlayItem,
@@ -782,25 +710,18 @@ private fun SelectedTextBlurAndOpacityBar(
         modifier = Modifier
             .fillMaxWidth()
             .background(Color(0xFF1B192E))
-            .padding(horizontal = 12.dp, vertical = 6.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp)
+            .padding(horizontal = 10.dp, vertical = 4.dp)
     ) {
-        Text(
-            text = "🔤 Đang chỉnh Chữ: \"${item.text}\" (Kéo thả trên khung View để đổi vị trí)",
-            color = Color(0xFFCE93D8),
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Bold
-        )
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             Text(
                 text = "Độ rõ ${(item.opacity * 100).toInt()}%",
                 color = Color.White,
                 fontSize = 10.sp,
-                modifier = Modifier.width(68.dp)
+                modifier = Modifier.width(64.dp)
             )
             Slider(
                 value = item.opacity,
@@ -808,13 +729,13 @@ private fun SelectedTextBlurAndOpacityBar(
                 valueRange = 0.1f..1.0f,
                 modifier = Modifier
                     .weight(1f)
-                    .height(24.dp)
+                    .height(22.dp)
             )
             Text(
-                text = "Làm nhòe ${item.blurRadiusDp.toInt()}dp",
+                text = "Làm mờ ${item.blurRadiusDp.toInt()}dp",
                 color = Color(0xFFFFD54F),
                 fontSize = 10.sp,
-                modifier = Modifier.width(78.dp)
+                modifier = Modifier.width(70.dp)
             )
             Slider(
                 value = item.blurRadiusDp,
@@ -822,13 +743,13 @@ private fun SelectedTextBlurAndOpacityBar(
                 valueRange = 0f..20f,
                 modifier = Modifier
                     .weight(1f)
-                    .height(24.dp)
+                    .height(22.dp)
             )
             Text(
                 text = "Cỡ ${item.fontSizeSp.toInt()}",
                 color = Color(0xFF80D8FF),
                 fontSize = 10.sp,
-                modifier = Modifier.width(40.dp)
+                modifier = Modifier.width(38.dp)
             )
             Slider(
                 value = item.fontSizeSp,
@@ -836,15 +757,12 @@ private fun SelectedTextBlurAndOpacityBar(
                 valueRange = 12f..38f,
                 modifier = Modifier
                     .weight(0.8f)
-                    .height(24.dp)
+                    .height(22.dp)
             )
         }
     }
 }
 
-/**
- * Thanh chỉnh nhanh Làm mờ (Opacity + Blur) và Kích thước cho Icon / Logo PNG đang chọn.
- */
 @Composable
 private fun SelectedImageBlurAndOpacityBar(
     item: CanvasImageOverlayItem,
@@ -856,25 +774,18 @@ private fun SelectedImageBlurAndOpacityBar(
         modifier = Modifier
             .fillMaxWidth()
             .background(Color(0xFF142826))
-            .padding(horizontal = 12.dp, vertical = 6.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp)
+            .padding(horizontal = 10.dp, vertical = 4.dp)
     ) {
-        Text(
-            text = "🖼️ Đang chỉnh Logo PNG: ${item.name} (Kéo thả trên khung View để đổi vị trí)",
-            color = Color(0xFF80CBC4),
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Bold
-        )
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             Text(
                 text = "Độ rõ ${(item.opacity * 100).toInt()}%",
                 color = Color.White,
                 fontSize = 10.sp,
-                modifier = Modifier.width(68.dp)
+                modifier = Modifier.width(64.dp)
             )
             Slider(
                 value = item.opacity,
@@ -882,13 +793,13 @@ private fun SelectedImageBlurAndOpacityBar(
                 valueRange = 0.05f..1.0f,
                 modifier = Modifier
                     .weight(1f)
-                    .height(24.dp)
+                    .height(22.dp)
             )
             Text(
                 text = "Làm mờ ${item.blurRadiusDp.toInt()}dp",
                 color = Color(0xFFFFD54F),
                 fontSize = 10.sp,
-                modifier = Modifier.width(74.dp)
+                modifier = Modifier.width(70.dp)
             )
             Slider(
                 value = item.blurRadiusDp,
@@ -896,13 +807,13 @@ private fun SelectedImageBlurAndOpacityBar(
                 valueRange = 0f..25f,
                 modifier = Modifier
                     .weight(1f)
-                    .height(24.dp)
+                    .height(22.dp)
             )
             Text(
                 text = "Size ${item.sizeDp.toInt()}",
                 color = Color(0xFF80D8FF),
                 fontSize = 10.sp,
-                modifier = Modifier.width(46.dp)
+                modifier = Modifier.width(44.dp)
             )
             Slider(
                 value = item.sizeDp,
@@ -910,15 +821,12 @@ private fun SelectedImageBlurAndOpacityBar(
                 valueRange = 32f..180f,
                 modifier = Modifier
                     .weight(0.8f)
-                    .height(24.dp)
+                    .height(22.dp)
             )
         }
     }
 }
 
-/**
- * Bảng công cụ Cắt ngắn Video MP4 + Tắt/Bật tiếng gốc của Video MP4 + Chỉnh tốc độ.
- */
 @Composable
 private fun VideoTrimAndAudioControlBar(
     videoTrack: ShortVideoTrack,
@@ -932,8 +840,8 @@ private fun VideoTrimAndAudioControlBar(
         modifier = Modifier
             .fillMaxWidth()
             .background(Color(0xFF1B2030))
-            .padding(horizontal = 10.dp, vertical = 6.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         Row(
             modifier = Modifier
@@ -950,7 +858,7 @@ private fun VideoTrimAndAudioControlBar(
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
             ) {
                 Text(
-                    text = if (videoTrack.muteOriginalAudio) "🔇 Tiếng gốc MP4: Đang TẮT" else "🔊 Tiếng gốc MP4: Đang BẬT",
+                    text = if (videoTrack.muteOriginalAudio) "🔇 Tiếng gốc MP4: TẮT" else "🔊 Tiếng gốc MP4: BẬT",
                     color = Color.White,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold
@@ -959,41 +867,27 @@ private fun VideoTrimAndAudioControlBar(
 
             OutlinedButton(
                 onClick = onTrimStartAtPlayhead,
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
             ) {
-                Text("✂ Cắt bỏ Đầu Video tại Playhead", color = Color(0xFF80D8FF), fontSize = 11.sp)
+                Text("✂ Cắt Đầu tại Playhead", color = Color(0xFF80D8FF), fontSize = 11.sp)
             }
 
             OutlinedButton(
                 onClick = onTrimEndAtPlayhead,
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
             ) {
-                Text("Cắt bỏ Đuôi Video tại Playhead ✂", color = Color(0xFF80D8FF), fontSize = 11.sp)
+                Text("Cắt Đuôi tại Playhead ✂", color = Color(0xFF80D8FF), fontSize = 11.sp)
             }
 
             if (videoTrack.isTrimmed) {
                 OutlinedButton(
                     onClick = onResetTrim,
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
                 ) {
                     Text("↺ Khôi phục gốc", color = Color(0xFFFFD54F), fontSize = 11.sp)
                 }
             }
-        }
 
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            Text(
-                text = "Tốc độ Video:",
-                color = Color.White,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.SemiBold
-            )
             EditorConstraints.SPEED_PRESETS.forEach { preset ->
                 val selected = videoTrack.speedMultiplier == preset
                 FilterChip(
@@ -1018,74 +912,68 @@ private fun PlaybackTransportBar(
     statusMessage: String,
     onTogglePlay: () -> Unit
 ) {
-    Column(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(Color(0xFF141824))
-            .padding(horizontal = 12.dp, vertical = 5.dp)
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(
-                    onClick = onTogglePlay,
-                    modifier = Modifier
-                        .size(34.dp)
-                        .background(Color(0xFF00E5FF), CircleShape)
-                ) {
-                    Icon(
-                        imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                        contentDescription = "Play/Pause",
-                        tint = Color.Black
-                    )
-                }
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "${EditorViewModel.formatMs(playheadMs)} / ${EditorViewModel.formatMs(totalDurationMs)}",
-                    color = Color.White,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(
+                onClick = onTogglePlay,
+                modifier = Modifier
+                    .size(30.dp)
+                    .background(Color(0xFF00E5FF), CircleShape)
+            ) {
+                Icon(
+                    imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                    contentDescription = "Play/Pause",
+                    tint = Color.Black,
+                    modifier = Modifier.size(18.dp)
                 )
             }
-
+            Spacer(modifier = Modifier.width(8.dp))
             Text(
-                text = statusMessage,
-                color = Color(0xFF90CAF9),
-                fontSize = 10.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(start = 10.dp)
+                text = "${EditorViewModel.formatMs(playheadMs)} / ${EditorViewModel.formatMs(totalDurationMs)}",
+                color = Color.White,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold
             )
         }
+
+        Text(
+            text = statusMessage,
+            color = Color(0xFF90CAF9),
+            fontSize = 10.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(start = 8.dp)
+        )
     }
 }
 
 @Composable
 private fun BottomCapCutToolbar(
     onOpenTtsCreator: () -> Unit,
-    onOpenVoiceLibrary: () -> Unit,
     onSplitAtPlayhead: () -> Unit,
+    onToggleVideoEditBar: () -> Unit,
     onOpenTextOverlaySheet: () -> Unit,
     onOpenLogoPngSheet: () -> Unit,
-    onToggleVideoEditBar: () -> Unit,
-    onImportSecondaryMp3: () -> Unit,
     onDeleteSelected: () -> Unit
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(Color(0xFF161925))
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 6.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
+            .padding(horizontal = 6.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically
     ) {
         CapCutToolItem(
             icon = Icons.Default.Mic,
-            label = "Text→Voice+Sub",
+            label = "Tạo Voice+Sub",
             accentColor = Color(0xFF00E676),
             onClick = onOpenTtsCreator
         )
@@ -1114,20 +1002,8 @@ private fun BottomCapCutToolbar(
             onClick = onOpenLogoPngSheet
         )
         CapCutToolItem(
-            icon = Icons.Default.CloudDownload,
-            label = "Kho Giọng VIP",
-            accentColor = Color(0xFFFFB300),
-            onClick = onOpenVoiceLibrary
-        )
-        CapCutToolItem(
-            icon = Icons.Default.LibraryMusic,
-            label = "+MP3 Phụ",
-            accentColor = Color(0xFF00E5FF),
-            onClick = onImportSecondaryMp3
-        )
-        CapCutToolItem(
             icon = Icons.Default.Delete,
-            label = "Xóa đoạn",
+            label = "Xóa",
             accentColor = Color(0xFFFF5252),
             onClick = onDeleteSelected
         )
@@ -1145,7 +1021,7 @@ private fun CapCutToolItem(
         modifier = Modifier
             .clip(RoundedCornerShape(8.dp))
             .clickable(onClick = onClick)
-            .padding(horizontal = 7.dp, vertical = 4.dp),
+            .padding(horizontal = 6.dp, vertical = 3.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Icon(
@@ -1168,7 +1044,7 @@ private fun CapCutToolItem(
 private fun AddTextOverlaySheet(
     onAddText: (text: String, fontSizeSp: Float, colorHex: Long, opacity: Float, blurDp: Float) -> Unit
 ) {
-    var inputText by remember { mutableStateOf("Tiêu đề Video Short") }
+    var inputText by remember { mutableStateOf("Tiêu đề Video") }
     var fontSizeSp by remember { mutableFloatStateOf(20f) }
     var opacity by remember { mutableFloatStateOf(1.0f) }
     var blurDp by remember { mutableFloatStateOf(0f) }
@@ -1185,11 +1061,14 @@ private fun AddTextOverlaySheet(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .verticalScroll(rememberScrollState())
+            .navigationBarsPadding()
+            .imePadding()
+            .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Text(
-            text = "🔤 Thêm Chữ (Text Overlay) & Làm Mờ",
+            text = "🔤 Nhập Chữ (Text) & Làm Mờ",
             color = Color.White,
             fontSize = 16.sp,
             fontWeight = FontWeight.Bold
@@ -1272,7 +1151,7 @@ private fun AddTextOverlaySheet(
             Text("Chèn Chữ vào Khu View 9:16 (Kéo thả tự do)", fontWeight = FontWeight.Bold)
         }
 
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(10.dp))
     }
 }
 
@@ -1281,16 +1160,19 @@ private fun AddLogoPngOverlaySheet(
     onPickPngFromDevice: () -> Unit,
     onCreateSampleBadgePng: (String) -> Unit
 ) {
-    var badgeLabel by remember { mutableStateOf("LKHK VIP") }
+    var badgeLabel by remember { mutableStateOf("LOGO") }
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .verticalScroll(rememberScrollState())
+            .navigationBarsPadding()
+            .imePadding()
+            .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Text(
-            text = "🖼️ Chèn Icon / Logo PNG (Hỗ trợ Làm Mờ & Kéo Thả Tự Do)",
+            text = "🖼️ Nhập Icon / Logo PNG (Làm Mờ & Kéo Thả Tự Do)",
             color = Color.White,
             fontSize = 16.sp,
             fontWeight = FontWeight.Bold
@@ -1338,13 +1220,7 @@ private fun AddLogoPngOverlaySheet(
             }
         }
 
-        Text(
-            text = "💡 Sau khi chèn, chạm vào Logo PNG trên khu View 9:16 để kéo đến vị trí bất kỳ và kéo thanh trượt Làm mờ (Opacity / Blur).",
-            color = Color(0xFFFFD54F),
-            fontSize = 11.sp
-        )
-
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(10.dp))
     }
 }
 
@@ -1356,8 +1232,7 @@ private fun OfflineTtsCreatorSheet(
     speechRate: Float,
     isSynthesizing: Boolean,
     onSelectVoice: (OfflineVoiceProfile) -> Unit,
-    onOpenVoiceLibrary: () -> Unit,
-    onWatchAdTopUp: (OfflineVoiceProfile) -> Unit,
+    onPreviewVoice: (OfflineVoiceProfile) -> Unit,
     onTextChange: (String) -> Unit,
     onSpeechRateChange: (Float) -> Unit,
     onRenderTts: () -> Unit
@@ -1365,52 +1240,29 @@ private fun OfflineTtsCreatorSheet(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+            .verticalScroll(rememberScrollState())
+            .navigationBarsPadding()
+            .imePadding()
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Text(
-                text = "🎙️ Chuyển Text thành Voice + Sub Phụ Đề",
-                color = Color.White,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Bold
-            )
-
-            OutlinedButton(
-                onClick = onOpenVoiceLibrary,
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.CloudDownload,
-                    contentDescription = null,
-                    tint = Color(0xFFFFB300),
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("Kho Giọng VIP (Xem QC)", color = Color(0xFFFFD54F), fontSize = 11.sp)
-            }
-        }
+        Text(
+            text = "🎙️ Chuyển Text thành Voice + Sub Phụ Đề",
+            color = Color.White,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold
+        )
 
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             installedVoices.forEach { profile ->
                 val isSelected = profile.id == selectedVoice.id
-                val quotaText = if (profile.requiresAdToUnlock) {
-                    "Còn ${profile.remainingQuotaUses} lượt"
-                } else {
-                    "Miễn phí"
-                }
-                Column(
+                Row(
                     modifier = Modifier
-                        .width(205.dp)
                         .clip(RoundedCornerShape(10.dp))
                         .background(if (isSelected) Color(0xFF1E3A5F) else Color(0xFF222634))
                         .border(
@@ -1419,23 +1271,34 @@ private fun OfflineTtsCreatorSheet(
                             shape = RoundedCornerShape(10.dp)
                         )
                         .clickable { onSelectVoice(profile) }
-                        .padding(10.dp)
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Text(
-                        text = profile.displayName,
-                        color = Color.White,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = "${profile.regionTag} • $quotaText",
-                        color = if (profile.needsAdTopUp) Color(0xFFFFB74D) else Color(0xFF80D8FF),
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    Column {
+                        Text(
+                            text = profile.displayName,
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "${profile.regionTag} • ${profile.styleTag}",
+                            color = Color(0xFF80D8FF),
+                            fontSize = 10.sp
+                        )
+                    }
+                    IconButton(
+                        onClick = { onPreviewVoice(profile) },
+                        modifier = Modifier.size(26.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.VolumeUp,
+                            contentDescription = "Nghe thử",
+                            tint = Color(0xFFFFD54F),
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
                 }
             }
         }
@@ -1446,7 +1309,7 @@ private fun OfflineTtsCreatorSheet(
             label = { Text("Nhập văn bản cần chuyển thành Voice (Tự động sinh Sub phụ đề kèm theo)") },
             modifier = Modifier
                 .fillMaxWidth()
-                .height(115.dp)
+                .height(110.dp)
         )
 
         Row(
@@ -1467,47 +1330,31 @@ private fun OfflineTtsCreatorSheet(
             )
         }
 
-        if (selectedVoice.needsAdTopUp) {
-            Button(
-                onClick = { onWatchAdTopUp(selectedVoice) },
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFB300)),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Icon(
-                    imageVector = Icons.Default.OndemandVideo,
-                    contentDescription = null,
-                    tint = Color.Black
+        Button(
+            onClick = onRenderTts,
+            enabled = !isSynthesizing,
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00C853)),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp)
+        ) {
+            if (isSynthesizing) {
+                CircularProgressIndicator(
+                    color = Color.White,
+                    strokeWidth = 2.dp,
+                    modifier = Modifier.size(18.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
+                Text("Đang tạo file Voice + Sub...", fontWeight = FontWeight.Bold)
+            } else {
                 Text(
-                    text = "Giọng VIP đã hết lượt • Xem 1 QC để nhận +${selectedVoice.adRewardUsesPerView} lượt!",
-                    color = Color.Black,
-                    fontWeight = FontWeight.ExtraBold
-                )
-            }
-        } else {
-            Button(
-                onClick = onRenderTts,
-                enabled = !isSynthesizing,
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00C853)),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                val quotaSuffix = if (selectedVoice.requiresAdToUnlock) {
-                    " (-1 lượt, còn ${selectedVoice.remainingQuotaUses})"
-                } else {
-                    ""
-                }
-                Text(
-                    text = if (isSynthesizing) {
-                        "Đang chuyển Text thành Voice + Sub..."
-                    } else {
-                        "Chuyển Text thành Voice + Tạo Sub Phụ Đề$quotaSuffix"
-                    },
-                    fontWeight = FontWeight.Bold
+                    text = "🎙️ Chuyển Text thành Voice + Tạo Sub Phụ Đề",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp
                 )
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(10.dp))
     }
 }

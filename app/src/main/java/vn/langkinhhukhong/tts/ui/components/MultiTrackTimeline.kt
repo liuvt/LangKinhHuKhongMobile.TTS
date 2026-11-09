@@ -37,19 +37,17 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import vn.langkinhhukhong.tts.model.CanvasImageOverlayItem
 import vn.langkinhhukhong.tts.model.CanvasTextOverlayItem
-import vn.langkinhhukhong.tts.model.SecondaryMp3Clip
 import vn.langkinhhukhong.tts.model.ShortVideoTrack
 import vn.langkinhhukhong.tts.model.VoiceSubtitleClip
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /**
- * Thanh Timeline Đa Tầng kiểu CapCut dạng Part:
- * - Tầng 1: Thước đo thời gian (chạm/kéo để tua Playhead).
- * - Tầng 2: Track Video chính 9:16 (Nút Bật/Tắt tiếng gốc MP4 + Cắt ngắn đầu/cuối Video + Tốc độ Speed).
- * - Tầng 3: Track Kép [MP3 Giọng đọc AI + Phụ đề gắn liền] (Chia nhiều đoạn part, kéo thả khớp với Video tùy ý).
- * - Tầng 4: Track Lớp phủ Chữ (Text) & Icon/Logo PNG (Kéo thả thời gian, hiển thị thông số làm mờ).
- * - Tầng 5: Các Track MP3 phụ (Nhạc nền BGM, SFX...).
+ * Thanh Timeline dạng Part chuẩn CapCut (Gọn gàng, không chiếm diện tích Khu View 9:16):
+ * - Tầng 1: Thước thời gian (chạm/kéo để di chuyển vạch Playhead).
+ * - Tầng 2: Track Video MP4 9:16 (Bật/Tắt tiếng gốc MP4 + Cắt ngắn đầu/đuôi Video).
+ * - Tầng 3: Track Voice + Sub phụ đề (Cắt thành nhiều đoạn part & kéo thả khớp với Video tùy ý).
+ * - Tầng 4: Track Chữ (Text) & Icon/Logo PNG.
  */
 @Composable
 fun MultiTrackTimeline(
@@ -57,11 +55,10 @@ fun MultiTrackTimeline(
     voiceClips: List<VoiceSubtitleClip>,
     textOverlays: List<CanvasTextOverlayItem>,
     imageOverlays: List<CanvasImageOverlayItem>,
-    secondaryMp3Clips: List<SecondaryMp3Clip>,
     totalDurationMs: Long,
     playheadMs: Long,
     selectedClipId: String?,
-    pixelsPerSecond: Dp = 56.dp,
+    pixelsPerSecond: Dp = 54.dp,
     onSeek: (Long) -> Unit,
     onSelectClip: (String?) -> Unit,
     onToggleMuteVideo: () -> Unit,
@@ -71,7 +68,6 @@ fun MultiTrackTimeline(
     onDragVoiceClip: (clipId: String, deltaMs: Long) -> Unit,
     onDragTextOverlay: (overlayId: String, deltaMs: Long) -> Unit,
     onDragImageOverlay: (overlayId: String, deltaMs: Long) -> Unit,
-    onDragSecondaryMp3: (clipId: String, deltaMs: Long) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val density = LocalDensity.current
@@ -87,15 +83,15 @@ fun MultiTrackTimeline(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .background(Color(0xFF11131A))
+            .background(Color(0xFF10131C))
             .horizontalScroll(scrollState)
-            .padding(vertical = 6.dp, horizontal = 14.dp)
+            .padding(vertical = 5.dp, horizontal = 12.dp)
     ) {
         Column(
             modifier = Modifier.width(timelineWidthDp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+            verticalArrangement = Arrangement.spacedBy(5.dp)
         ) {
-            // 1. THƯỚC ĐO THỜI GIAN (TIME RULER)
+            // 1. THƯỚC ĐO THỜI GIAN (20dp)
             TimeRulerBar(
                 totalDurationMs = totalDurationMs,
                 pxPerMs = pxPerMs,
@@ -103,7 +99,7 @@ fun MultiTrackTimeline(
                 onSeek = currentOnSeek
             )
 
-            // 2. TRACK VIDEO 9:16 CHÍNH (BẬT/TẮT TIẾNG MP4 + CẮT NGẮN VIDEO + TỐC ĐỘ)
+            // 2. TRACK VIDEO 9:16 (36dp)
             VideoTrackRow(
                 videoTrack = videoTrack,
                 pxPerMs = pxPerMs,
@@ -113,7 +109,7 @@ fun MultiTrackTimeline(
                 onResetTrim = onResetVideoTrim
             )
 
-            // 3. TRACK KÉP: MP3 GIỌNG ĐỌC AI + PHỤ ĐỀ TỰ ĐỘNG KHỚP (CHIA NHIỀU PART KÉO THẢ TÙY Ý)
+            // 3. TRACK VOICE AI + SUB PHỤ ĐỀ (54dp)
             CompoundVoiceSubtitleTrackRow(
                 voiceClips = voiceClips,
                 selectedClipId = selectedClipId,
@@ -123,7 +119,7 @@ fun MultiTrackTimeline(
                 onDragVoiceClip = onDragVoiceClip
             )
 
-            // 4. TRACK CHỮ (TEXT) & ICON / LOGO PNG (KÈM LÀM MỜ & KÉO THẢ)
+            // 4. TRACK CHỮ (TEXT) & LOGO PNG (34dp)
             VisualOverlaysTrackRow(
                 textOverlays = textOverlays,
                 imageOverlays = imageOverlays,
@@ -134,25 +130,15 @@ fun MultiTrackTimeline(
                 onDragTextOverlay = onDragTextOverlay,
                 onDragImageOverlay = onDragImageOverlay
             )
-
-            // 5. TRACK MP3 PHỤ (BGM / SFX)
-            SecondaryMp3TrackSection(
-                secondaryClips = secondaryMp3Clips,
-                selectedClipId = selectedClipId,
-                pxPerMs = pxPerMs,
-                timelineWidthDp = timelineWidthDp,
-                onSelectClip = onSelectClip,
-                onDragSecondaryMp3 = onDragSecondaryMp3
-            )
         }
 
-        // VẠCH CON TRỎ PLAYHEAD ĐỎ/TRẮNG (Điểm cắt Split & Xem thử)
+        // VẠCH ĐỎ PLAYHEAD
         val playheadOffsetPx = (playheadMs * pxPerMs).roundToInt()
         Box(
             modifier = Modifier
                 .offset { IntOffset(x = playheadOffsetPx, y = 0) }
                 .width(2.dp)
-                .height(265.dp)
+                .height(158.dp)
                 .background(Color(0xFFFF3B5C))
         )
     }
@@ -168,8 +154,8 @@ private fun TimeRulerBar(
     Box(
         modifier = Modifier
             .width(timelineWidthDp)
-            .height(24.dp)
-            .background(Color(0xFF191C26), RoundedCornerShape(4.dp))
+            .height(20.dp)
+            .background(Color(0xFF181C28), RoundedCornerShape(4.dp))
             .pointerInput(totalDurationMs, pxPerMs) {
                 detectTapGestures { offset ->
                     val targetMs = (offset.x / pxPerMs).toLong().coerceIn(0L, totalDurationMs)
@@ -191,7 +177,7 @@ private fun TimeRulerBar(
                 val isMajor = sec % 5 == 0
                 drawLine(
                     color = if (isMajor) Color(0xFF9EA6B8) else Color(0xFF454B5E),
-                    start = Offset(x, size.height - if (isMajor) 11f else 5f),
+                    start = Offset(x, size.height - if (isMajor) 9f else 4f),
                     end = Offset(x, size.height),
                     strokeWidth = if (isMajor) 2f else 1f
                 )
@@ -204,7 +190,7 @@ private fun TimeRulerBar(
                 text = String.format("%02d:%02d", sec / 60, sec % 60),
                 color = Color(0xFFB5BDCE),
                 fontSize = 9.sp,
-                modifier = Modifier.offset(x = xDp + 2.dp, y = 2.dp)
+                modifier = Modifier.offset(x = xDp + 2.dp, y = 1.dp)
             )
         }
     }
@@ -224,62 +210,59 @@ private fun VideoTrackRow(
 
     Box(
         modifier = Modifier
-            .width(widthDp.coerceAtLeast(280.dp))
-            .height(42.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(Color(0xFF23395B))
-            .border(1.dp, Color(0xFF4E7AC7), RoundedCornerShape(8.dp))
-            .padding(horizontal = 8.dp),
+            .width(widthDp.coerceAtLeast(260.dp))
+            .height(36.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(Color(0xFF213654))
+            .border(1.dp, Color(0xFF4E7AC7), RoundedCornerShape(6.dp))
+            .padding(horizontal = 6.dp),
         contentAlignment = Alignment.CenterStart
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            // Nút Bật/Tắt tiếng gốc của file Video MP4
             Box(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(5.dp))
+                    .clip(RoundedCornerShape(4.dp))
                     .background(if (videoTrack.muteOriginalAudio) Color(0xFFD32F2F) else Color(0xFF00C853))
                     .clickable { onToggleMuteVideo() }
-                    .padding(horizontal = 7.dp, vertical = 4.dp)
+                    .padding(horizontal = 6.dp, vertical = 3.dp)
             ) {
                 Text(
-                    text = if (videoTrack.muteOriginalAudio) "🔇 Đã tắt tiếng MP4" else "🔊 Tiếng MP4: Bật",
+                    text = if (videoTrack.muteOriginalAudio) "🔇 Tắt tiếng MP4" else "🔊 Tiếng MP4",
                     color = Color.White,
                     fontSize = 10.sp,
                     fontWeight = FontWeight.Bold
                 )
             }
 
-            // Nút Cắt bỏ phần đầu Video tại vạch Playhead
             Box(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(5.dp))
+                    .clip(RoundedCornerShape(4.dp))
                     .background(Color(0xFF152238))
-                    .border(1.dp, Color(0xFF64B5F6), RoundedCornerShape(5.dp))
+                    .border(1.dp, Color(0xFF64B5F6), RoundedCornerShape(4.dp))
                     .clickable { onTrimStart() }
                     .padding(horizontal = 6.dp, vertical = 3.dp)
             ) {
                 Text(
-                    text = "✂ Cắt đầu Video",
+                    text = "✂ Cắt đầu",
                     color = Color(0xFF80D8FF),
                     fontSize = 10.sp,
                     fontWeight = FontWeight.SemiBold
                 )
             }
 
-            // Nút Cắt bỏ phần cuối Video tại vạch Playhead
             Box(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(5.dp))
+                    .clip(RoundedCornerShape(4.dp))
                     .background(Color(0xFF152238))
-                    .border(1.dp, Color(0xFF64B5F6), RoundedCornerShape(5.dp))
+                    .border(1.dp, Color(0xFF64B5F6), RoundedCornerShape(4.dp))
                     .clickable { onTrimEnd() }
                     .padding(horizontal = 6.dp, vertical = 3.dp)
             ) {
                 Text(
-                    text = "Cắt đuôi Video ✂",
+                    text = "Cắt đuôi ✂",
                     color = Color(0xFF80D8FF),
                     fontSize = 10.sp,
                     fontWeight = FontWeight.SemiBold
@@ -289,13 +272,13 @@ private fun VideoTrackRow(
             if (videoTrack.isTrimmed) {
                 Box(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(5.dp))
+                        .clip(RoundedCornerShape(4.dp))
                         .background(Color(0xFFFFB300))
                         .clickable { onResetTrim() }
                         .padding(horizontal = 6.dp, vertical = 3.dp)
                 ) {
                     Text(
-                        text = "↺ Khôi phục gốc",
+                        text = "↺ Gốc",
                         color = Color.Black,
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold
@@ -304,9 +287,9 @@ private fun VideoTrackRow(
             }
 
             Text(
-                text = "🎬 ${videoTrack.displayName} (${videoTrack.effectiveDurationMs / 1000}s • ${videoTrack.speedMultiplier}x)",
+                text = "🎬 ${videoTrack.displayName} (${videoTrack.effectiveDurationMs / 1000}s)",
                 color = Color.White,
-                fontSize = 11.sp,
+                fontSize = 10.sp,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -329,17 +312,17 @@ private fun CompoundVoiceSubtitleTrackRow(
     Box(
         modifier = Modifier
             .width(timelineWidthDp)
-            .height(68.dp)
-            .background(Color(0xFF171A24), RoundedCornerShape(8.dp))
+            .height(54.dp)
+            .background(Color(0xFF161A24), RoundedCornerShape(6.dp))
     ) {
         if (voiceClips.isEmpty()) {
             Text(
-                text = "🎙️ Track Voice AI + Phụ đề (Chuyển Text thành Voice, cắt chia nhiều đoạn & kéo thả khớp với Video tùy ý)",
-                color = Color(0xFF6C7486),
-                fontSize = 11.sp,
+                text = "🎙️ Track Voice + Sub (Bấm 'Tạo Voice+Sub' bên dưới -> Cắt chia đoạn & Kéo thả khớp với Video)",
+                color = Color(0xFF788296),
+                fontSize = 10.sp,
                 modifier = Modifier
                     .align(Alignment.CenterStart)
-                    .padding(start = 12.dp)
+                    .padding(start = 10.dp)
             )
         }
 
@@ -354,15 +337,15 @@ private fun CompoundVoiceSubtitleTrackRow(
 
             Column(
                 modifier = Modifier
-                    .offset { IntOffset(x = offsetX, y = 3) }
+                    .offset { IntOffset(x = offsetX, y = 2) }
                     .width(clipWidthDp)
-                    .height(62.dp)
-                    .clip(RoundedCornerShape(8.dp))
+                    .height(50.dp)
+                    .clip(RoundedCornerShape(6.dp))
                     .background(primaryColor)
                     .border(
                         width = if (isSelected) 2.dp else 1.dp,
                         color = borderColor,
-                        shape = RoundedCornerShape(8.dp)
+                        shape = RoundedCornerShape(6.dp)
                     )
                     .clickable { onSelectClip(clip.id) }
                     .pointerInput(clip.id, pxPerMs) {
@@ -378,31 +361,29 @@ private fun CompoundVoiceSubtitleTrackRow(
                         )
                     }
             ) {
-                // NỬA TRÊN: Dải Phụ đề (Subtitle Bar) bám chặt theo đoạn Voice
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(25.dp)
+                        .height(21.dp)
                         .background(Color(0xCC9A4800))
-                        .padding(horizontal = 6.dp),
+                        .padding(horizontal = 5.dp),
                     contentAlignment = Alignment.CenterStart
                 ) {
                     Text(
-                        text = "💬 Sub (${clip.words.size} từ): ${clip.visibleSubText}",
+                        text = "💬 ${clip.visibleSubText}",
                         color = Color(0xFFFFF59D),
-                        fontSize = 10.sp,
+                        fontSize = 9.sp,
                         fontWeight = FontWeight.Medium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
 
-                // NỬA DƯỚI: Dải MP3 Voice AI + Biểu đồ sóng âm
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f)
-                        .padding(horizontal = 6.dp),
+                        .padding(horizontal = 5.dp),
                     contentAlignment = Alignment.CenterStart
                 ) {
                     Canvas(modifier = Modifier.matchParentSize()) {
@@ -413,18 +394,18 @@ private fun CompoundVoiceSubtitleTrackRow(
                             val barHeight = size.height * waveRatio.coerceIn(0.2f, 0.85f)
                             val top = (size.height - barHeight) / 2f
                             drawLine(
-                                color = Color(0x66A7FFEB),
+                                color = Color(0x55A7FFEB),
                                 start = Offset(x, top),
                                 end = Offset(x, top + barHeight),
-                                strokeWidth = 3f
+                                strokeWidth = 2.5f
                             )
                         }
                     }
 
                     Text(
-                        text = "🎙️ ${clip.voiceProfile.displayName.substringBefore("(").trim()} • ${(clip.durationMs / 100f).roundToInt() / 10f}s",
+                        text = "🎙️ ${clip.voiceProfile.displayName} (${(clip.durationMs / 100f).roundToInt() / 10f}s)",
                         color = Color.White,
-                        fontSize = 10.sp,
+                        fontSize = 9.sp,
                         fontWeight = FontWeight.Bold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -451,17 +432,17 @@ private fun VisualOverlaysTrackRow(
     Box(
         modifier = Modifier
             .width(timelineWidthDp)
-            .height(44.dp)
-            .background(Color(0xFF181625), RoundedCornerShape(8.dp))
+            .height(34.dp)
+            .background(Color(0xFF181625), RoundedCornerShape(6.dp))
     ) {
         if (textOverlays.isEmpty() && imageOverlays.isEmpty()) {
             Text(
-                text = "🔤🖼️ Track Chữ (Text) & Icon/Logo PNG (Cho phép làm mờ & kéo thả vị trí bất kỳ trên khu View)",
+                text = "🔤🖼️ Track Chữ (Text) & Logo PNG (Bấm '+Chữ' hoặc '+Logo PNG' để thêm & làm mờ)",
                 color = Color(0xFF7E7896),
-                fontSize = 11.sp,
+                fontSize = 10.sp,
                 modifier = Modifier
                     .align(Alignment.CenterStart)
-                    .padding(start = 12.dp)
+                    .padding(start = 10.dp)
             )
         }
 
@@ -473,15 +454,15 @@ private fun VisualOverlaysTrackRow(
 
             Box(
                 modifier = Modifier
-                    .offset { IntOffset(x = offsetX, y = 4) }
+                    .offset { IntOffset(x = offsetX, y = 2) }
                     .width(widthDp)
-                    .height(36.dp)
-                    .clip(RoundedCornerShape(6.dp))
+                    .height(30.dp)
+                    .clip(RoundedCornerShape(5.dp))
                     .background(Color(0xFF6A1B9A))
                     .border(
                         width = if (isSelected) 2.dp else 1.dp,
                         color = if (isSelected) Color(0xFFFFD600) else Color(0xFFCE93D8),
-                        shape = RoundedCornerShape(6.dp)
+                        shape = RoundedCornerShape(5.dp)
                     )
                     .clickable { onSelectClip(item.id) }
                     .pointerInput(item.id, pxPerMs) {
@@ -496,14 +477,13 @@ private fun VisualOverlaysTrackRow(
                             }
                         )
                     }
-                    .padding(horizontal = 8.dp),
+                    .padding(horizontal = 6.dp),
                 contentAlignment = Alignment.CenterStart
             ) {
-                val blurInfo = if (item.blurRadiusDp > 0.5f) " • Nhòe ${item.blurRadiusDp.toInt()}dp" else ""
                 Text(
-                    text = "🔤 \"${item.text}\" (Rõ ${(item.opacity * 100).toInt()}%$blurInfo)",
+                    text = "🔤 \"${item.text}\" (${(item.opacity * 100).toInt()}%)",
                     color = Color.White,
-                    fontSize = 10.sp,
+                    fontSize = 9.sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -519,15 +499,15 @@ private fun VisualOverlaysTrackRow(
 
             Box(
                 modifier = Modifier
-                    .offset { IntOffset(x = offsetX, y = 6) }
+                    .offset { IntOffset(x = offsetX, y = 2) }
                     .width(widthDp)
-                    .height(34.dp)
-                    .clip(RoundedCornerShape(6.dp))
+                    .height(30.dp)
+                    .clip(RoundedCornerShape(5.dp))
                     .background(Color(0xFF00695C))
                     .border(
                         width = if (isSelected) 2.dp else 1.dp,
                         color = if (isSelected) Color(0xFFFFD600) else Color(0xFF80CBC4),
-                        shape = RoundedCornerShape(6.dp)
+                        shape = RoundedCornerShape(5.dp)
                     )
                     .clickable { onSelectClip(img.id) }
                     .pointerInput(img.id, pxPerMs) {
@@ -542,90 +522,14 @@ private fun VisualOverlaysTrackRow(
                             }
                         )
                     }
-                    .padding(horizontal = 8.dp),
+                    .padding(horizontal = 6.dp),
                 contentAlignment = Alignment.CenterStart
             ) {
-                val blurInfo = if (img.blurRadiusDp > 0.5f) " • Nhòe ${img.blurRadiusDp.toInt()}dp" else ""
                 Text(
-                    text = "🖼️ ${img.name} (Rõ ${(img.opacity * 100).toInt()}%$blurInfo)",
+                    text = "🖼️ ${img.name} (${(img.opacity * 100).toInt()}%)",
                     color = Color(0xFFE0F2F1),
-                    fontSize = 10.sp,
+                    fontSize = 9.sp,
                     fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun SecondaryMp3TrackSection(
-    secondaryClips: List<SecondaryMp3Clip>,
-    selectedClipId: String?,
-    pxPerMs: Float,
-    timelineWidthDp: Dp,
-    onSelectClip: (String?) -> Unit,
-    onDragSecondaryMp3: (clipId: String, deltaMs: Long) -> Unit
-) {
-    val density = LocalDensity.current
-
-    Box(
-        modifier = Modifier
-            .width(timelineWidthDp)
-            .height(44.dp)
-            .background(Color(0xFF151821), RoundedCornerShape(8.dp))
-    ) {
-        if (secondaryClips.isEmpty()) {
-            Text(
-                text = "🎵 Track MP3 Phụ (Nhạc nền / SFX - Hỗ trợ import & cắt nhiều đoạn MP3)",
-                color = Color(0xFF6C7486),
-                fontSize = 11.sp,
-                modifier = Modifier
-                    .align(Alignment.CenterStart)
-                    .padding(start = 12.dp)
-            )
-        }
-
-        secondaryClips.forEach { bgm ->
-            val offsetX = (bgm.timelineStartMs * pxPerMs).roundToInt()
-            val clipWidthDp = with(density) { (bgm.durationMs * pxPerMs).toDp().coerceAtLeast(44.dp) }
-            val isSelected = bgm.id == selectedClipId
-            val currentOnDrag by rememberUpdatedState(onDragSecondaryMp3)
-
-            Box(
-                modifier = Modifier
-                    .offset { IntOffset(x = offsetX, y = 4) }
-                    .width(clipWidthDp)
-                    .height(36.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(Color(0xFF004D61))
-                    .border(
-                        width = if (isSelected) 2.dp else 1.dp,
-                        color = if (isSelected) Color(0xFFFFD600) else Color(0xFF00B8D4),
-                        shape = RoundedCornerShape(6.dp)
-                    )
-                    .clickable { onSelectClip(bgm.id) }
-                    .pointerInput(bgm.id, pxPerMs) {
-                        detectHorizontalDragGestures(
-                            onDragStart = { onSelectClip(bgm.id) },
-                            onHorizontalDrag = { change, dragAmountPx ->
-                                change.consume()
-                                val deltaMs = (dragAmountPx / pxPerMs).toLong()
-                                if (deltaMs != 0L) {
-                                    currentOnDrag(bgm.id, deltaMs)
-                                }
-                            }
-                        )
-                    }
-                    .padding(horizontal = 8.dp),
-                contentAlignment = Alignment.CenterStart
-            ) {
-                Text(
-                    text = "🎵 ${bgm.fileName} (${(bgm.durationMs / 100f).roundToInt() / 10f}s)",
-                    color = Color(0xFFE0F7FA),
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Medium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )

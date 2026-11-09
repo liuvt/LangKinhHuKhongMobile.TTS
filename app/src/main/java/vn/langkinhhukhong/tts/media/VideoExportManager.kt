@@ -201,15 +201,9 @@ class VideoExportManager(private val context: Context) {
             )
 
             // 5. Ghép các đoạn Voice AI đã cắt/kéo đúng theo mốc thời gian `timelineStartMs` trên Timeline
-            val mixedVoiceFile = buildTimelineSyncedVoiceTrackWav(
-                voiceClips = voiceClips,
-                totalDurationMs = videoTrack.effectiveDurationMs
-            )
-            if (mixedVoiceFile != null && mixedVoiceFile.exists()) {
-                val voiceItem = MediaItem.fromUri(Uri.fromFile(mixedVoiceFile))
-                sequences.add(
-                    EditedMediaItemSequence(listOf(EditedMediaItem.Builder(voiceItem).build()))
-                )
+            val voiceSequenceItems = buildTimelineSyncedVoiceItems(voiceClips)
+            if (voiceSequenceItems.isNotEmpty()) {
+                sequences.add(EditedMediaItemSequence(voiceSequenceItems))
             }
 
             // 6. Ghép các file MP3 phụ (BGM / SFX)
@@ -265,65 +259,60 @@ class VideoExportManager(private val context: Context) {
     }
 
     /**
-     * Trộn tất cả các đoạn Voice đã cắt/kéo (`VoiceSubtitleClip`) vào 1 file WAV chuẩn theo đúng
-     * vị trí `timelineStartMs` (chèn khoảng lặng ở những đoạn trống) để âm thanh khớp 100% với Video & Phụ đề.
+     * Tạo chuỗi `EditedMediaItem` cho các đoạn Voice (`VoiceSubtitleClip` định dạng `.wav` hoặc `.mp3`),
+     * tự động chèn các đoạn âm thanh khoảng lặng (Silence WAV) vào những khoảng trống giữa các đoạn
+     * để sau khi kéo thả/cắt chia đoạn trên Timeline, tiếng đọc khớp 100% với vị trí thực tế trên Video.
      */
-    private fun buildTimelineSyncedVoiceTrackWav(
-        voiceClips: List<VoiceSubtitleClip>,
-        totalDurationMs: Long
-    ): File? {
-        if (voiceClips.isEmpty()) return null
-        return runCatching {
-            val sampleRate = 22050
-            val maxEndMs = voiceClips.maxOf { it.timelineEndMs }.coerceAtLeast(totalDurationMs)
-            val totalSamples = ((maxEndMs / 1000.0) * sampleRate).toInt().coerceAtLeast(sampleRate)
-            val mixedPcm = ByteArray(totalSamples * 2)
+    @OptIn(UnstableApi::class)
+    private fun buildTimelineSyncedVoiceItems(
+        voiceClips: List<VoiceSubtitleClip>
+    ): List<EditedMediaItem> {
+        if (voiceClips.isEmpty()) return emptyList()
+        val sorted = voiceClips.sortedBy { it.timelineStartMs }
+        val items = mutableListOf<EditedMediaItem>()
+        val tempDir = File(context.cacheDir, "mixed_audio").apply { mkdirs() }
+        var cursorMs = 0L
 
-            for (clip in voiceClips) {
-                val srcFile = File(clip.audioFilePath)
-                if (!srcFile.exists() || srcFile.length() <= 44L) continue
+        for ((index, clip) in sorted.withIndex()) {
+            val audioFile = File(clip.audioFilePath)
+            if (!audioFile.exists() || audioFile.length() == 0L) continue
 
-                val startSampleInSrc = ((clip.trimStartMs / 1000.0) * sampleRate).toInt().coerceAtLeast(0)
-                val endSampleInSrc = ((clip.trimEndMs / 1000.0) * sampleRate).toInt().coerceAtLeast(startSampleInSrc)
-                val clipSampleCount = endSampleInSrc - startSampleInSrc
-                if (clipSampleCount <= 0) continue
-
-                val targetStartSample = ((clip.timelineStartMs / 1000.0) * sampleRate).toInt().coerceAtLeast(0)
-
-                RandomAccessFile(srcFile, "r").use { raf ->
-                    val byteOffset = 44L + startSampleInSrc * 2L
-                    if (byteOffset < raf.length()) {
-                        raf.seek(byteOffset)
-                        val bytesToRead = (clipSampleCount * 2).coerceAtMost((raf.length() - byteOffset).toInt())
-                        val clipBuf = ByteArray(bytesToRead)
-                        raf.readFully(clipBuf)
-
-                        val samplesRead = bytesToRead / 2
-                        for (s in 0 until samplesRead) {
-                            val dstIdx = targetStartSample + s
-                            if (dstIdx >= totalSamples) break
-
-                            val lo = clipBuf[s * 2].toInt() and 0xFF
-                            val hi = clipBuf[s * 2 + 1].toInt()
-                            val srcVal = ((hi shl 8) or lo).toShort().toInt()
-                            val scaledVal = (srcVal * clip.volume).toInt()
-
-                            val curLo = mixedPcm[dstIdx * 2].toInt() and 0xFF
-                            val curHi = mixedPcm[dstIdx * 2 + 1].toInt()
-                            val curVal = ((curHi shl 8) or curLo).toShort().toInt()
-
-                            val combined = (curVal + scaledVal).coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
-                            mixedPcm[dstIdx * 2] = (combined and 0xFF).toByte()
-                            mixedPcm[dstIdx * 2 + 1] = ((combined shr 8) and 0xFF).toByte()
-                        }
-                    }
+            val gapMs = clip.timelineStartMs - cursorMs
+            if (gapMs >= 80L) {
+                val silenceFile = createSilenceWavFile(
+                    outFile = File(tempDir, "silence_gap_${index}_${gapMs}ms.wav"),
+                    durationMs = gapMs
+                )
+                if (silenceFile != null) {
+                    val silenceItem = MediaItem.fromUri(Uri.fromFile(silenceFile))
+                    items.add(EditedMediaItem.Builder(silenceItem).build())
                 }
+                cursorMs += gapMs
             }
 
-            val tempDir = File(context.cacheDir, "mixed_audio").apply { mkdirs() }
-            val outWav = File(tempDir, "timeline_voice_mix_${System.currentTimeMillis()}.wav")
-            writeWavHeaderAndData(outWav, mixedPcm, sampleRate)
-            outWav
+            val clippedVoiceItem = MediaItem.Builder()
+                .setUri(Uri.fromFile(audioFile))
+                .setClippingConfiguration(
+                    MediaItem.ClippingConfiguration.Builder()
+                        .setStartPositionMs(clip.trimStartMs.coerceAtLeast(0L))
+                        .setEndPositionMs(clip.trimEndMs.coerceAtLeast(clip.trimStartMs + 100L))
+                        .build()
+                )
+                .build()
+            items.add(EditedMediaItem.Builder(clippedVoiceItem).build())
+            cursorMs = clip.timelineEndMs
+        }
+
+        return items
+    }
+
+    private fun createSilenceWavFile(outFile: File, durationMs: Long): File? {
+        return runCatching {
+            val sampleRate = 22050
+            val totalSamples = ((durationMs.coerceIn(80L, 180_000L) / 1000.0) * sampleRate).toInt().coerceAtLeast(100)
+            val silentPcm = ByteArray(totalSamples * 2)
+            writeWavHeaderAndData(outFile, silentPcm, sampleRate)
+            outFile
         }.getOrNull()
     }
 
