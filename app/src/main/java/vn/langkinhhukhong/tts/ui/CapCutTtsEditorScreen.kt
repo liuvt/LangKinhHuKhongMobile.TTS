@@ -41,10 +41,10 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.MovieEdit
 import androidx.compose.material.icons.filled.OndemandVideo
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material.icons.filled.VideoFile
 import androidx.compose.material.icons.filled.VolumeOff
@@ -1096,7 +1096,7 @@ private fun BottomCapCutToolbar(
             onClick = onSplitAtPlayhead
         )
         CapCutToolItem(
-            icon = Icons.Default.MovieEdit,
+            icon = Icons.Default.Speed,
             label = "Cắt Video/Âm",
             accentColor = Color(0xFFFF9100),
             onClick = onToggleVideoEditBar

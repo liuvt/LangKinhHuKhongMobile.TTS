@@ -21,6 +21,7 @@ import androidx.media3.effect.OverlayEffect
 import androidx.media3.effect.OverlaySettings
 import androidx.media3.effect.TextOverlay
 import androidx.media3.effect.TextureOverlay
+import com.google.common.collect.ImmutableList
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.EditedMediaItem
 import androidx.media3.transformer.EditedMediaItemSequence
@@ -166,7 +167,7 @@ class VideoExportManager(private val context: Context) {
             }
 
             val videoEffects = mutableListOf<Effect>(
-                OverlayEffect(textureOverlays)
+                OverlayEffect(ImmutableList.copyOf(textureOverlays))
             )
 
             // 3. Cấu hình tăng/giảm tốc độ (Speed) qua SonicAudioProcessor
