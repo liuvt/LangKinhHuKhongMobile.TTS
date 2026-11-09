@@ -50,10 +50,13 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+        jniLibs {
+            excludes += listOf("**/x86/**")
+        }
     }
 
     androidResources {
-        noCompress += listOf("onnx", "json", "txt")
+        noCompress += listOf("json", "txt")
     }
 }
 
@@ -91,16 +94,16 @@ dependencies {
     implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.jar", "*.aar"))))
 }
 
-// Tự động đồng bộ 2 model mặc định (minhkhang, ngochuyenupdate) từ thư mục Voices/ vào assets/models/ khi build APK
+// Tự động đồng bộ tất cả 5 bộ model giọng thật (minhkhang, ngochuyenupdate, lacphi, minhquang, VPBank) vào assets/models/ khi build APK
 val syncBuiltInVoices by tasks.registering(Copy::class) {
     val rootVoicesDir = rootProject.file("Voices")
     if (rootVoicesDir.exists()) {
         from(rootVoicesDir) {
             include("minhkhang/**")
             include("ngochuyenupdate/**")
-            include("lacphi/*.json", "lacphi/*.txt")
-            include("minhquang/*.json", "minhquang/*.txt")
-            include("VPBank/*.json", "VPBank/*.txt")
+            include("lacphi/**")
+            include("minhquang/**")
+            include("VPBank/**")
         }
         into(project.file("src/main/assets/models"))
     }

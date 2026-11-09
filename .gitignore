@@ -13,8 +13,7 @@ app/build/
 *.aab
 *.ap_
 *.dex
+app/libs/*.aar
+app/src/main/assets/espeak-ng-data/
 app/src/main/assets/models/**/*.onnx
-
-
 Voices/**/*.onnx
-*.apk

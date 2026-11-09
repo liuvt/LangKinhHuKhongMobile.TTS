@@ -6,9 +6,11 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RectF
+import android.media.AudioAttributes
 import android.media.MediaMetadataRetriever
 import android.media.MediaPlayer
 import android.net.Uri
+import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
@@ -21,6 +23,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import vn.langkinhhukhong.tts.ads.AdMonetizationManager
 import vn.langkinhhukhong.tts.media.VideoExportManager
 import vn.langkinhhukhong.tts.model.CanvasImageOverlayItem
 import vn.langkinhhukhong.tts.model.CanvasTextOverlayItem
@@ -56,7 +59,9 @@ data class EditorUiState(
     val imageOverlays: List<CanvasImageOverlayItem> = emptyList(),
     val subtitleStyle: SubtitleOverlayStyle = SubtitleOverlayStyle(),
     val selectedVoiceProfile: OfflineVoiceProfile = OfflineVoiceProfile.BUILT_IN_MALE_MINH_KHANG,
-    val pendingAdVoiceTarget: OfflineVoiceProfile? = null,
+    val remainingCharQuota: Int = AdMonetizationManager.MAX_CHARACTER_QUOTA,
+    val maxCharQuota: Int = AdMonetizationManager.MAX_CHARACTER_QUOTA,
+    val showFallbackQuotaAdDialog: Boolean = false,
     val totalAdsWatched: Int = 0,
     val ttsInputText: String = "Xin chào các bạn, hôm nay chúng ta cùng khám phá câu chuyện thú vị này nhé.",
     val ttsSpeechRate: Float = 1.0f,
@@ -65,7 +70,7 @@ data class EditorUiState(
     val selectedClipId: String? = null,
     val isSynthesizingTts: Boolean = false,
     val isExportingVideo: Boolean = false,
-    val statusMessage: String = "Sẵn sàng • Bấm 'Tạo Voice+Sub' để chuyển Text thành Giọng đọc kèm Phụ đề"
+    val statusMessage: String = "Sẵn sàng • Miễn phí tất cả 9 giọng đọc (Hạn mức 500 ký tự/lượt quảng cáo)"
 ) {
     val installedVoices: List<OfflineVoiceProfile>
         get() = voiceCatalog
@@ -119,13 +124,22 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     private val ttsEngine = SherpaOfflineTtsEngine(application)
     private val exportManager = VideoExportManager(application)
+    private val adManager = AdMonetizationManager(application)
 
-    private val _uiState = MutableStateFlow(EditorUiState())
+    private val _uiState = MutableStateFlow(
+        EditorUiState(
+            remainingCharQuota = adManager.getRemainingCharacters(),
+            totalAdsWatched = adManager.getTotalAdsWatchedByUser()
+        )
+    )
     val uiState: StateFlow<EditorUiState> = _uiState.asStateFlow()
 
     private var playbackJob: Job? = null
     private var activeTtsMediaPlayer: MediaPlayer? = null
     private var activeClipPlayingId: String? = null
+    private var pendingAutoRenderAfterAd: Boolean = false
+    private var pendingCompletionCallbackAfterAd: (() -> Unit)? = null
+    private var pendingPlayClipStartMsAfterAd: Long? = null
 
     // =========================================================================
     // 1. VIDEO MP4 9:16 (<= 3 PHÚT): NẠP VIDEO, CẮT NGẮN VIDEO, TẮT/BẬT TIẾNG MP4
@@ -279,7 +293,12 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun updateTtsInputText(newText: String) {
-        _uiState.update { it.copy(ttsInputText = newText) }
+        val capped = if (newText.length > AdMonetizationManager.MAX_CHARACTER_QUOTA) {
+            newText.take(AdMonetizationManager.MAX_CHARACTER_QUOTA)
+        } else {
+            newText
+        }
+        _uiState.update { it.copy(ttsInputText = capped) }
     }
 
     fun updateTtsSpeechRate(rate: Float) {
@@ -292,19 +311,19 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 it.copy(statusMessage = "🔊 Đang tạo mẫu nghe thử giọng ${voice.displayName}...")
             }
             val sampleRes = ttsEngine.synthesizeWithSubtitles(
-                text = "Xin chào, đây là giọng đọc ${voice.displayName}",
+                text = "Xin chào, đây là giọng đọc ${voice.displayName}.",
                 voiceProfile = voice,
                 speechSpeed = _uiState.value.ttsSpeechRate,
-                insertAtTimelineMs = 0L
+                insertAtTimelineMs = 0L,
+                onStatusProgress = { progressMsg ->
+                    _uiState.update { s -> s.copy(statusMessage = progressMsg) }
+                }
             )
             sampleRes.onSuccess { clip ->
                 stopTtsAudioPlayer()
                 runCatching {
-                    val mp = MediaPlayer().apply {
-                        setDataSource(clip.audioFilePath)
-                        prepare()
-                        start()
-                    }
+                    val mp = createSpeechMediaPlayer(clip.audioFilePath, volume = 1.0f)
+                    mp.start()
                     activeTtsMediaPlayer = mp
                     _uiState.update {
                         it.copy(statusMessage = "🔊 Đang phát mẫu giọng: ${voice.displayName}")
@@ -319,21 +338,53 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     /**
-     * Chuyển Text thành file Voice + Tự động sinh Sub phụ đề kèm theo,
-     * đặt lên Timeline và tự động phát ngay để người dùng nghe và xem phụ đề!
+     * Chuyển Text thành file Voice + Tự động sinh Sub phụ đề kèm theo:
+     * - Cho phép dùng TẤT CẢ giọng đọc.
+     * - Giới hạn 500 ký tự mỗi chu kỳ:
+     *   + Nếu hết ký tự (`remaining <= 0` hoặc `text.length > remaining`), tự động nhảy quảng cáo để cấp lại 500 ký tự rồi tiếp tục tạo.
+     *   + Ngay sau khi tạo xong mà số ký tự còn lại về `0`, cũng tự động nhảy quảng cáo để nạp sẵn 500 ký tự mới!
      */
     fun renderOfflineTtsAndAttachSubtitle(
-        @Suppress("UNUSED_PARAMETER") activity: Activity? = null,
+        activity: Activity? = null,
         onComplete: (() -> Unit)? = null
     ) {
         val currentState = _uiState.value
-        val voice = currentState.selectedVoiceProfile
         val text = currentState.ttsInputText.trim()
 
         if (text.isEmpty()) {
             _uiState.update { it.copy(statusMessage = "Vui lòng nhập văn bản cần chuyển thành Voice!") }
             return
         }
+
+        val charCount = text.length
+        val remaining = adManager.getRemainingCharacters()
+
+        if (remaining <= 0 || charCount > remaining) {
+            stopPlaybackTicker()
+            pendingAutoRenderAfterAd = true
+            pendingCompletionCallbackAfterAd = onComplete
+            _uiState.update {
+                it.copy(
+                    isPlaying = false,
+                    remainingCharQuota = remaining,
+                    statusMessage = "📺 Đã hết hạn mức ký tự ($remaining/${AdMonetizationManager.MAX_CHARACTER_QUOTA}) • Tự động mở Quảng cáo để cấp lại 500 ký tự..."
+                )
+            }
+            triggerAutoAdAndRefill(activity)
+            return
+        }
+
+        executeSynthesisInternal(activity = activity, onComplete = onComplete)
+    }
+
+    private fun executeSynthesisInternal(
+        activity: Activity?,
+        onComplete: (() -> Unit)?
+    ) {
+        val currentState = _uiState.value
+        val voice = currentState.selectedVoiceProfile
+        val text = currentState.ttsInputText.trim().take(AdMonetizationManager.MAX_CHARACTER_QUOTA)
+        if (text.isEmpty()) return
 
         // Nếu tại vị trí Playhead đã có đoạn Voice khác, tự động nối tiếp sau đoạn đó để không đè lên nhau
         val insertAtMs = if (currentState.voiceClips.any { currentState.playheadMs in it.timelineStartMs until it.timelineEndMs }) {
@@ -347,7 +398,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             _uiState.update {
                 it.copy(
                     isSynthesizingTts = true,
-                    statusMessage = "⏳ Đang chuyển Text thành Voice (${voice.displayName})..."
+                    statusMessage = "⏳ Đang chuyển ${text.length} ký tự thành Voice (${voice.displayName})..."
                 )
             }
 
@@ -355,24 +406,44 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 text = text,
                 voiceProfile = voice,
                 speechSpeed = currentState.ttsSpeechRate,
-                insertAtTimelineMs = insertAtMs
+                insertAtTimelineMs = insertAtMs,
+                onStatusProgress = { progressMsg ->
+                    _uiState.update { s -> s.copy(statusMessage = progressMsg) }
+                }
             )
 
             result.onSuccess { newClip ->
+                val remainingAfterUse = adManager.consumeCharacters(text.length)
+                val exhaustedNow = remainingAfterUse <= 0
+
                 _uiState.update { state ->
                     state.copy(
                         isSynthesizingTts = false,
+                        remainingCharQuota = remainingAfterUse,
                         voiceClips = (state.voiceClips + newClip).sortedBy { it.timelineStartMs },
                         selectedClipId = newClip.id,
                         playheadMs = newClip.timelineStartMs,
-                        isPlaying = true,
-                        statusMessage = "✅ Đã tạo Voice (${formatMs(newClip.durationMs)}) + ${newClip.words.size} từ Sub phụ đề!"
+                        isPlaying = !exhaustedNow,
+                        statusMessage = if (exhaustedNow) {
+                            "📺 Đã dùng hết 500 ký tự • Tự động mở Quảng cáo để nạp lại 500 ký tự mới..."
+                        } else {
+                            "✅ Đã tạo Voice (${formatMs(newClip.durationMs)}) • Còn lại: $remainingAfterUse/${AdMonetizationManager.MAX_CHARACTER_QUOTA} ký tự"
+                        }
                     )
                 }
                 onComplete?.invoke()
-                // Tự động phát ngay đoạn Voice vừa tạo kèm hiệu ứng chạy phụ đề
-                syncAudioPlaybackWithPlayhead(newClip.timelineStartMs, isPlaying = true, forceSeek = true)
-                startPlaybackTicker()
+
+                if (exhaustedNow) {
+                    // Vừa chạm mốc hết sạch 500 ký tự -> Tự động nhảy quảng cáo ngay lập tức!
+                    pendingAutoRenderAfterAd = false
+                    pendingCompletionCallbackAfterAd = null
+                    pendingPlayClipStartMsAfterAd = newClip.timelineStartMs
+                    triggerAutoAdAndRefill(activity)
+                } else {
+                    // Phát ngay đoạn Voice vừa tạo kèm phụ đề
+                    syncAudioPlaybackWithPlayhead(newClip.timelineStartMs, isPlaying = true, forceSeek = true)
+                    startPlaybackTicker()
+                }
             }.onFailure { err ->
                 _uiState.update {
                     it.copy(
@@ -381,6 +452,50 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     )
                 }
             }
+        }
+    }
+
+    private fun triggerAutoAdAndRefill(activity: Activity?) {
+        adManager.triggerAutoAdForQuotaRefill(
+            activity = activity,
+            onQuotaRefilled = { refilledQuota ->
+                onAdQuotaRefillCompleted(refilledQuota, activity)
+            },
+            onShowFallbackAdOverlay = {
+                _uiState.update { it.copy(showFallbackQuotaAdDialog = true) }
+            }
+        )
+    }
+
+    fun completeFallbackQuotaAd(activity: Activity? = null) {
+        val refilled = adManager.refillFullCharacterQuota()
+        _uiState.update { it.copy(showFallbackQuotaAdDialog = false) }
+        onAdQuotaRefillCompleted(refilled, activity)
+    }
+
+    private fun onAdQuotaRefillCompleted(refilledQuota: Int, activity: Activity?) {
+        val shouldRenderNow = pendingAutoRenderAfterAd
+        val savedCallback = pendingCompletionCallbackAfterAd
+        val playStartAfterAd = pendingPlayClipStartMsAfterAd
+
+        pendingAutoRenderAfterAd = false
+        pendingCompletionCallbackAfterAd = null
+        pendingPlayClipStartMsAfterAd = null
+
+        _uiState.update {
+            it.copy(
+                remainingCharQuota = refilledQuota,
+                totalAdsWatched = adManager.getTotalAdsWatchedByUser(),
+                statusMessage = "🎉 Đã xem Quảng cáo • Đã cấp lại $refilledQuota/$refilledQuota ký tự cho tất cả giọng đọc!"
+            )
+        }
+
+        if (shouldRenderNow) {
+            executeSynthesisInternal(activity = activity, onComplete = savedCallback)
+        } else if (playStartAfterAd != null) {
+            _uiState.update { it.copy(playheadMs = playStartAfterAd, isPlaying = true) }
+            syncAudioPlaybackWithPlayhead(playStartAfterAd, isPlaying = true, forceSeek = true)
+            startPlaybackTicker()
         }
     }
 
@@ -813,11 +928,16 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     private fun startPlaybackTicker() {
         playbackJob?.cancel()
         playbackJob = viewModelScope.launch {
-            val tickMs = 40L
+            val anchorPlayheadMs = _uiState.value.playheadMs
+            val anchorWallClockMs = SystemClock.elapsedRealtime()
+            val tickDelayMs = 25L
+
             while (isActive && _uiState.value.isPlaying) {
-                delay(tickMs)
+                delay(tickDelayMs)
                 val current = _uiState.value
-                val nextMs = current.playheadMs + tickMs
+                val elapsedWallMs = (SystemClock.elapsedRealtime() - anchorWallClockMs).coerceAtLeast(0L)
+                val nextMs = anchorPlayheadMs + elapsedWallMs
+
                 if (nextMs >= current.totalTimelineDurationMs) {
                     _uiState.update { it.copy(playheadMs = current.totalTimelineDurationMs, isPlaying = false) }
                     stopTtsAudioPlayer()
@@ -835,6 +955,20 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         stopTtsAudioPlayer()
     }
 
+    private fun createSpeechMediaPlayer(filePath: String, volume: Float): MediaPlayer {
+        return MediaPlayer().apply {
+            setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+            )
+            setDataSource(filePath)
+            prepare()
+            setVolume(volume, volume)
+        }
+    }
+
     private fun syncAudioPlaybackWithPlayhead(
         playheadMs: Long,
         isPlaying: Boolean,
@@ -845,24 +979,37 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             return
         }
 
-        val activeClip = _uiState.value.activeVoiceClipAtPlayhead
+        val activeClip = _uiState.value.voiceClips.lastOrNull {
+            playheadMs >= it.timelineStartMs && playheadMs < it.timelineEndMs
+        }
         if (activeClip == null) {
             stopTtsAudioPlayer()
-        } else if (activeClipPlayingId != activeClip.id || forceSeek || activeTtsMediaPlayer?.isPlaying != true) {
+            return
+        }
+
+        val targetOffsetMs = (activeClip.trimStartMs + (playheadMs - activeClip.timelineStartMs)).toInt()
+        val existingMp = activeTtsMediaPlayer
+        val needsRestart = activeClipPlayingId != activeClip.id || forceSeek || existingMp == null
+
+        if (needsRestart) {
             stopTtsAudioPlayer()
             val file = File(activeClip.audioFilePath)
-            if (file.exists()) {
+            if (file.exists() && file.length() > 64L) {
                 runCatching {
-                    val mp = MediaPlayer().apply {
-                        setDataSource(file.absolutePath)
-                        prepare()
-                        val offsetInsideFile = (activeClip.trimStartMs + (playheadMs - activeClip.timelineStartMs)).toInt()
-                        seekTo(offsetInsideFile)
-                        setVolume(activeClip.volume, activeClip.volume)
-                        start()
+                    val mp = createSpeechMediaPlayer(file.absolutePath, activeClip.volume)
+                    if (targetOffsetMs > 0) {
+                        mp.seekTo(targetOffsetMs)
                     }
+                    mp.start()
                     activeTtsMediaPlayer = mp
                     activeClipPlayingId = activeClip.id
+                }
+            }
+        } else if (existingMp != null) {
+            // Cắt chính xác khi chạm mép cắt đuôi trimEndMs của đoạn Voice đã tách
+            runCatching {
+                if (existingMp.isPlaying && existingMp.currentPosition >= activeClip.trimEndMs.toInt()) {
+                    stopTtsAudioPlayer()
                 }
             }
         }
@@ -870,8 +1017,10 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun stopTtsAudioPlayer() {
         runCatching {
-            activeTtsMediaPlayer?.stop()
-            activeTtsMediaPlayer?.release()
+            activeTtsMediaPlayer?.let { mp ->
+                if (mp.isPlaying) mp.stop()
+                mp.release()
+            }
         }
         activeTtsMediaPlayer = null
         activeClipPlayingId = null
@@ -931,6 +1080,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     override fun onCleared() {
         super.onCleared()
         stopPlaybackTicker()
+        ttsEngine.release()
     }
 
     companion object {

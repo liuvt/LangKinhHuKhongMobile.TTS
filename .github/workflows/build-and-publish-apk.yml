@@ -14,10 +14,18 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repository (with LFS if enabled)
+      - name: Checkout Repository
         uses: actions/checkout@v4
-        with:
-          lfs: true
+
+      - name: Fetch Real ONNX Voice Models from voices-assets branch
+        run: |
+          if git ls-remote --exit-code --heads origin voices-assets >/dev/null 2>&1; then
+            git fetch origin voices-assets --depth=1
+            git checkout origin/voices-assets -- Voices/
+            ls -lh Voices/*/*.onnx
+          else
+            echo "voices-assets branch not found, proceeding with available models"
+          fi
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -30,12 +38,45 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Prepare app/libs & Generate tokens.txt from Voices/*.onnx.json
+      - name: Download Sherpa-ONNX v1.12.40 AAR (with Piper eSpeak-ng JNI) & espeak-ng-data
         run: |
-          mkdir -p app/libs
+          mkdir -p app/libs app/src/main/assets
+          curl -L --retry 5 -f -o app/libs/sherpa-onnx-1.12.40.aar \
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.12.40/sherpa-onnx-1.12.40.aar"
+          curl -L --retry 5 -f -o /tmp/espeak-ng-data.tar.bz2 \
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/espeak-ng-data.tar.bz2"
+          tar -xjf /tmp/espeak-ng-data.tar.bz2 -C app/src/main/assets
+          ls -lh app/libs/sherpa-onnx-1.12.40.aar
+          ls -la app/src/main/assets/espeak-ng-data | head -n 15
+
+      - name: Generate tokens.txt & Inject Sherpa-ONNX Metadata into Voices/*.onnx
+        run: |
           python3 -c "
           import json, os, glob
-          for json_path in glob.glob('Voices/**/*.onnx.json', recursive=True):
+
+          def encode_varint(val):
+              out = bytearray()
+              while True:
+                  b = val & 0x7F
+                  val >>= 7
+                  if val:
+                      out.append(b | 0x80)
+                  else:
+                      out.append(b)
+                      break
+              return bytes(out)
+
+          def encode_string_field(field_num, s):
+              raw = s.encode('utf-8')
+              tag = (field_num << 3) | 2
+              return encode_varint(tag) + encode_varint(len(raw)) + raw
+
+          def encode_metadata_prop(key, value):
+              entry = encode_string_field(1, str(key)) + encode_string_field(2, str(value))
+              tag14 = (14 << 3) | 2
+              return encode_varint(tag14) + encode_varint(len(entry)) + entry
+
+          for json_path in sorted(glob.glob('Voices/**/*.onnx.json', recursive=True)):
               folder = os.path.dirname(json_path)
               with open(json_path, 'r', encoding='utf-8') as f:
                   data = json.load(f)
@@ -45,9 +86,33 @@ jobs:
                   for sym, id_list in items:
                       tf.write(f'{sym} {id_list[0]}\n')
               print('Verified tokens:', tokens_path, len(items))
+
+              onnx_path = json_path[:-5]
+              if os.path.exists(onnx_path) and os.path.getsize(onnx_path) > 1024 * 1024:
+                  with open(onnx_path, 'rb') as mf:
+                      mf.seek(-512, 2)
+                      tail = mf.read(512)
+                  if not (b'comment' in tail and b'piper' in tail and b'sample_rate' in tail):
+                      meta = {
+                          'model_type': 'vits',
+                          'comment': 'piper',
+                          'has_espeak': '1',
+                          'language': 'Vietnamese',
+                          'voice': data.get('espeak', {}).get('voice', 'vi'),
+                          'sample_rate': str(data.get('audio', {}).get('sample_rate', 22050)),
+                          'n_speakers': str(data.get('num_speakers', 1)),
+                      }
+                      blob = b''.join(encode_metadata_prop(k, v) for k, v in meta.items())
+                      with open(onnx_path, 'ab') as mf:
+                          mf.write(blob)
+                      print('Injected Sherpa-ONNX metadata into:', onnx_path)
+                  else:
+                      print('Sherpa-ONNX metadata already present in:', onnx_path)
           "
 
       - name: Build Runnable APK (assembleDebug)
+        env:
+          GRADLE_OPTS: "-Xmx4g -Dorg.gradle.jvmargs=-Xmx4g"
         run: |
           gradle assembleDebug --no-daemon --stacktrace
           cp app/build/outputs/apk/debug/app-debug.apk LangKinhHuKhongTTS-v1.0.0.apk
@@ -69,10 +134,9 @@ jobs:
             File cài đặt trực tiếp trên Android: **`LangKinhHuKhongTTS-v1.0.0.apk`**
 
             ### Tính năng chính:
-            - **Chuyển Text thành Voice AI + Tự động ghép Sub phụ đề kèm theo** (Tích hợp 5 bộ model: `Minh Khang`, `Ngọc Huyền`, `Lạc Phi`, `Minh Quang`, `VPBank` 5 giọng).
-            - **Biên tập Video Short `9:16` ($\le 3$ phút):** Cắt ngắn đầu/đuôi Video, tắt/bật âm thanh gốc của file MP4, chỉnh tốc độ `0.5x` - `2.0x`.
-            - **Cắt chia đoạn Voice MP3 (Part) & Kéo thả khớp với Video tùy ý.**
-            - **Chèn Chữ (`Text`) & Icon/Logo `PNG`:** Hỗ trợ làm mờ trong suốt (`Opacity`) + làm mờ nhòe (`Gaussian Blur`) và kéo thả vị trí bất kỳ trực tiếp trên Khu View `9:16`.
+            - **Kết xuất giọng đọc AI ONNX Piper Offline chuẩn như bản PC** (`Sherpa-ONNX 1.12.40` + `espeak-ng-data` + `WavPacing` + `SonicAudioProcessor` giữ nguyên cao độ giọng + đồng bộ phụ đề theo PCM frame).
+            - **Mở sẵn TẤT CẢ 9 giọng đọc từ 5 bộ model** (`Minh Khang`, `Ngọc Huyền`, `Lạc Phi`, `Minh Quang`, `VPBank` 5 giọng) • **Giới hạn 500 ký tự/chu kỳ**, hết ký tự tự động nhảy quảng cáo để cấp thêm 500 ký tự.
+            - **Biên tập Video Short `9:16` ($\le 3$ phút):** Cắt ngắn đầu/đuôi Video, tắt/bật âm thanh gốc MP4, cắt chia đoạn Voice MP3 kéo thả tùy ý, chỉnh Size Text Phụ đề (`10-36sp`) & Size Text (`10-56sp`), chèn Logo PNG & làm mờ.
           files: |
             LangKinhHuKhongTTS-v1.0.0.apk
           prerelease: false

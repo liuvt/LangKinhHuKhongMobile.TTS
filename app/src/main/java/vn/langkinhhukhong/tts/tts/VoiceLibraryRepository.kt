@@ -195,7 +195,7 @@ class VoiceLibraryRepository(
                     onnxJsonFileName = profile.onnxJsonFileName,
                     tokensFileName = profile.tokensFileName,
                     onProgress = onProgress
-                )
+                ) != null
             }
 
             // 2. Nếu chưa có trong assets, tải trực tiếp `.onnx` và `.onnx.json` từ Server Online

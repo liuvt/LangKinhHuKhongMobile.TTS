@@ -58,6 +58,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -71,6 +72,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -95,10 +97,13 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import kotlinx.coroutines.delay
 import vn.langkinhhukhong.tts.model.CanvasImageOverlayItem
 import vn.langkinhhukhong.tts.model.CanvasTextOverlayItem
 import vn.langkinhhukhong.tts.model.EditorConstraints
@@ -107,6 +112,7 @@ import vn.langkinhhukhong.tts.model.ShortVideoTrack
 import vn.langkinhhukhong.tts.model.SubtitleOverlayStyle
 import vn.langkinhhukhong.tts.model.TimelineSubtitleToken
 import vn.langkinhhukhong.tts.ui.components.MultiTrackTimeline
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -147,9 +153,11 @@ fun CapCutTtsEditorScreen(
         color = Color(0xFF0B0D13)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // 1. THANH HEADER GỌN GÀNG (Nạp Video 9:16 <= 3p, Bật/Tắt tiếng MP4, Xuất MP4)
+            // 1. THANH HEADER GỌN GÀNG (Nạp Video 9:16 <= 3p, Hạn mức 500 ký tự, Bật/Tắt tiếng MP4, Xuất MP4)
             TopEditorHeader(
                 videoTrack = state.videoTrack,
+                remainingChars = state.remainingCharQuota,
+                maxChars = state.maxCharQuota,
                 isExporting = state.isExportingVideo,
                 onPickVideo = { videoPickerLauncher.launch("video/*") },
                 onToggleMuteVideo = { viewModel.toggleMuteOriginalVideo() },
@@ -278,6 +286,8 @@ fun CapCutTtsEditorScreen(
                     inputText = state.ttsInputText,
                     speechRate = state.ttsSpeechRate,
                     subtitleFontSizeSp = state.subtitleStyle.fontSizeSp,
+                    remainingCharQuota = state.remainingCharQuota,
+                    maxCharQuota = state.maxCharQuota,
                     isSynthesizing = state.isSynthesizingTts,
                     onSelectVoice = { viewModel.selectVoiceProfile(it) },
                     onPreviewVoice = { viewModel.previewVoiceSample(it) },
@@ -336,12 +346,24 @@ fun CapCutTtsEditorScreen(
                 )
             }
         }
+
+        // BẢNG QUẢNG CÁO TỰ ĐỘNG KHI DÙNG HẾT 500 KÝ TỰ (Dự phòng khi AdMob đang nạp hoặc trên máy test)
+        if (state.showFallbackQuotaAdDialog) {
+            AutoQuotaAdOverlayDialog(
+                maxChars = state.maxCharQuota,
+                onAdFinished = {
+                    viewModel.completeFallbackQuotaAd(activity)
+                }
+            )
+        }
     }
 }
 
 @Composable
 private fun TopEditorHeader(
     videoTrack: ShortVideoTrack,
+    remainingChars: Int,
+    maxChars: Int,
     isExporting: Boolean,
     onPickVideo: () -> Unit,
     onToggleMuteVideo: () -> Unit,
@@ -365,8 +387,8 @@ private fun TopEditorHeader(
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                text = "Khung 9:16 (≤ 3p) • Độ dài: ${EditorViewModel.formatMs(videoTrack.effectiveDurationMs)}",
-                color = Color(0xFF80D8FF),
+                text = "9:16 (${EditorViewModel.formatMs(videoTrack.effectiveDurationMs)}) • Ký tự còn: $remainingChars/$maxChars",
+                color = if (remainingChars > 80) Color(0xFF80D8FF) else Color(0xFFFFD54F),
                 fontSize = 10.sp
             )
         }
@@ -493,12 +515,21 @@ private fun Vertical9By16PreviewStage(
             }
 
             LaunchedEffect(isPlaying) {
-                if (isPlaying) exoPlayer.play() else exoPlayer.pause()
+                val targetSourcePosMs = (playheadMs * videoTrack.speedMultiplier).toLong()
+                if (isPlaying) {
+                    exoPlayer.seekTo(targetSourcePosMs)
+                    exoPlayer.play()
+                } else {
+                    exoPlayer.pause()
+                    exoPlayer.seekTo(targetSourcePosMs)
+                }
             }
 
             LaunchedEffect(playheadMs) {
+                val sourceVideoPositionMs = (playheadMs * videoTrack.speedMultiplier).toLong()
                 if (!isPlaying) {
-                    val sourceVideoPositionMs = (playheadMs * videoTrack.speedMultiplier).toLong()
+                    exoPlayer.seekTo(sourceVideoPositionMs)
+                } else if (abs(exoPlayer.currentPosition - sourceVideoPositionMs) > 280L) {
                     exoPlayer.seekTo(sourceVideoPositionMs)
                 }
             }
@@ -1348,6 +1379,8 @@ private fun OfflineTtsCreatorSheet(
     inputText: String,
     speechRate: Float,
     subtitleFontSizeSp: Float,
+    remainingCharQuota: Int,
+    maxCharQuota: Int,
     isSynthesizing: Boolean,
     onSelectVoice: (OfflineVoiceProfile) -> Unit,
     onPreviewVoice: (OfflineVoiceProfile) -> Unit,
@@ -1356,6 +1389,9 @@ private fun OfflineTtsCreatorSheet(
     onSubtitleFontSizeChange: (Float) -> Unit,
     onRenderTts: () -> Unit
 ) {
+    val currentLength = inputText.trim().length
+    val needsAutoAd = remainingCharQuota <= 0 || currentLength > remainingCharQuota
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1365,11 +1401,36 @@ private fun OfflineTtsCreatorSheet(
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "🎙️ Chuyển Text thành Voice + Sub",
+                color = Color.White,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(if (needsAutoAd) Color(0xFF4A2C11) else Color(0xFF153827))
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
+            ) {
+                Text(
+                    text = "Còn $remainingCharQuota/$maxCharQuota ký tự",
+                    color = if (needsAutoAd) Color(0xFFFFD54F) else Color(0xFF69F0AE),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
         Text(
-            text = "🎙️ Chuyển Text thành Voice + Sub Phụ Đề",
-            color = Color.White,
-            fontSize = 16.sp,
-            fontWeight = FontWeight.Bold
+            text = "Dùng tự do tất cả 9 giọng đọc • Giới hạn 500 ký tự (hết ký tự tự động mở quảng cáo cấp mới)",
+            color = Color(0xFFB0BEC5),
+            fontSize = 11.sp
         )
 
         Row(
@@ -1425,7 +1486,9 @@ private fun OfflineTtsCreatorSheet(
         OutlinedTextField(
             value = inputText,
             onValueChange = onTextChange,
-            label = { Text("Nhập văn bản cần chuyển thành Voice (Tự động sinh Sub phụ đề kèm theo)") },
+            label = {
+                Text("Nhập văn bản (${inputText.length}/$maxCharQuota ký tự • Tự động sinh Sub phụ đề)")
+            },
             modifier = Modifier
                 .fillMaxWidth()
                 .height(110.dp)
@@ -1471,7 +1534,9 @@ private fun OfflineTtsCreatorSheet(
         Button(
             onClick = onRenderTts,
             enabled = !isSynthesizing,
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00C853)),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = if (needsAutoAd) Color(0xFFFF9100) else Color(0xFF00C853)
+            ),
             modifier = Modifier
                 .fillMaxWidth()
                 .height(48.dp)
@@ -1483,10 +1548,15 @@ private fun OfflineTtsCreatorSheet(
                     modifier = Modifier.size(18.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Đang tạo file Voice + Sub...", fontWeight = FontWeight.Bold)
+                Text("Đang kết xuất Voice ONNX + Sub...", fontWeight = FontWeight.Bold)
             } else {
                 Text(
-                    text = "🎙️ Chuyển Text thành Voice + Tạo Sub Phụ Đề",
+                    text = if (needsAutoAd) {
+                        "📺 Hết ký tự ($remainingCharQuota/$maxCharQuota) • Mở Quảng cáo & Tạo Voice"
+                    } else {
+                        "🎙️ Chuyển Text thành Voice (-$currentLength ký tự)"
+                    },
+                    color = if (needsAutoAd) Color.Black else Color.White,
                     fontWeight = FontWeight.Bold,
                     fontSize = 13.sp
                 )
@@ -1494,5 +1564,119 @@ private fun OfflineTtsCreatorSheet(
         }
 
         Spacer(modifier = Modifier.height(10.dp))
+    }
+}
+
+/**
+ * Màn hình Quảng Cáo Tự Động Toàn Màn Hình khi dùng hết 500 ký tự
+ * (Đảm bảo tự động nhảy quảng cáo 100% kể cả khi AdMob đang chờ nạp quảng cáo mới).
+ */
+@Composable
+private fun AutoQuotaAdOverlayDialog(
+    maxChars: Int,
+    onAdFinished: () -> Unit
+) {
+    var secondsLeft by remember { mutableIntStateOf(5) }
+    val currentOnFinished by rememberUpdatedState(onAdFinished)
+
+    LaunchedEffect(Unit) {
+        while (secondsLeft > 0) {
+            delay(1_000L)
+            secondsLeft--
+        }
+        delay(400L)
+        currentOnFinished()
+    }
+
+    Dialog(
+        onDismissRequest = {},
+        properties = DialogProperties(
+            dismissOnBackPress = false,
+            dismissOnClickOutside = false,
+            usePlatformDefaultWidth = false
+        )
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        listOf(Color(0xFF0F172A), Color(0xFF1E1B4B), Color(0xFF090D16))
+                    )
+                )
+                .padding(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(Color(0xFF182032))
+                    .border(1.5.dp, Color(0xFFFFD54F), RoundedCornerShape(18.dp))
+                    .padding(22.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(Color(0xFFFFD54F))
+                        .padding(horizontal = 10.dp, vertical = 3.dp)
+                ) {
+                    Text(
+                        text = "QUẢNG CÁO TÀI TRỢ • AD",
+                        color = Color.Black,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                }
+
+                Text(
+                    text = "Đã dùng hết hạn mức $maxChars ký tự",
+                    color = Color.White,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    textAlign = TextAlign.Center
+                )
+
+                Text(
+                    text = "Quảng cáo tự động hiển thị để cấp thêm +$maxChars ký tự miễn phí cho tất cả 9 giọng đọc AI.",
+                    color = Color(0xFFCFD8DC),
+                    fontSize = 13.sp,
+                    textAlign = TextAlign.Center
+                )
+
+                LinearProgressIndicator(
+                    progress = { (5 - secondsLeft) / 5f },
+                    color = Color(0xFF00E676),
+                    trackColor = Color(0xFF2C3852),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(8.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                )
+
+                if (secondsLeft > 0) {
+                    Text(
+                        text = "⏳ Tự động cấp +$maxChars ký tự sau ${secondsLeft}s...",
+                        color = Color(0xFF80D8FF),
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                } else {
+                    Button(
+                        onClick = onAdFinished,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00C853)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "✅ Nhận +$maxChars Ký Tự & Tiếp Tục Ngay",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+        }
     }
 }
