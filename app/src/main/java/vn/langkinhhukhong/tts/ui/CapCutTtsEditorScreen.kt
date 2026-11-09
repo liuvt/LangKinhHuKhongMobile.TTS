@@ -1,9 +1,13 @@
 package vn.langkinhhukhong.tts.ui
 
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.view.ViewGroup
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
@@ -39,7 +43,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddPhotoAlternate
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentCut
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.GraphicEq
@@ -47,6 +54,7 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material.icons.filled.VideoFile
 import androidx.compose.material.icons.filled.VolumeOff
@@ -204,6 +212,7 @@ fun CapCutTtsEditorScreen(
             if (selectedText != null) {
                 SelectedTextBlurAndOpacityBar(
                     item = selectedText,
+                    onUpdateText = { viewModel.updateSelectedTextOverlay(text = it) },
                     onUpdateOpacity = { viewModel.updateSelectedTextOverlay(opacity = it) },
                     onUpdateBlur = { viewModel.updateSelectedTextOverlay(blurRadiusDp = it) },
                     onUpdateFontSize = { viewModel.updateSelectedTextOverlay(fontSizeSp = it) }
@@ -270,75 +279,123 @@ fun CapCutTtsEditorScreen(
 
         // BẢNG 1: CHUYỂN TEXT THÀNH VOICE + TỰ ĐỘNG TẠO SUB PHỤ ĐỀ KÈM THEO (TỐI ĐA 1000 KÝ TỰ)
         if (showTtsSheet) {
-            val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-            ModalBottomSheet(
+            Dialog(
                 onDismissRequest = { if (!state.isSynthesizingTts) showTtsSheet = false },
-                sheetState = sheetState,
-                containerColor = Color(0xFF161924)
+                properties = DialogProperties(usePlatformDefaultWidth = false)
             ) {
-                OfflineTtsCreatorSheet(
-                    installedVoices = state.installedVoices,
-                    selectedVoice = state.selectedVoiceProfile,
-                    inputText = state.ttsInputText,
-                    speechRate = state.ttsSpeechRate,
-                    subtitleFontSizeSp = state.subtitleStyle.fontSizeSp,
-                    maxCharQuota = state.maxCharQuota,
-                    isSynthesizing = state.isSynthesizingTts,
-                    onSelectVoice = { viewModel.selectVoiceProfile(it) },
-                    onPreviewVoice = { viewModel.previewVoiceSample(it) },
-                    onTextChange = { viewModel.updateTtsInputText(it) },
-                    onSpeechRateChange = { viewModel.updateTtsSpeechRate(it) },
-                    onSubtitleFontSizeChange = { viewModel.updateSubtitleStyle(fontSizeSp = it) },
-                    onRenderTts = {
-                        viewModel.renderOfflineTtsAndAttachSubtitle(
-                            activity = activity,
-                            onComplete = { showTtsSheet = false }
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color(0x99000000))
+                        .clickable(
+                            enabled = !state.isSynthesizingTts,
+                            onClick = { showTtsSheet = false }
+                        ),
+                    contentAlignment = Alignment.BottomCenter
+                ) {
+                    Surface(
+                        color = Color(0xFF161924),
+                        shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = false) {}
+                    ) {
+                        OfflineTtsCreatorSheet(
+                            installedVoices = state.installedVoices,
+                            selectedVoice = state.selectedVoiceProfile,
+                            inputText = state.ttsInputText,
+                            speechRate = state.ttsSpeechRate,
+                            subtitleFontSizeSp = state.subtitleStyle.fontSizeSp,
+                            maxCharQuota = state.maxCharQuota,
+                            isSynthesizing = state.isSynthesizingTts,
+                            onDismiss = { if (!state.isSynthesizingTts) showTtsSheet = false },
+                            onSelectVoice = { viewModel.selectVoiceProfile(it) },
+                            onPreviewVoice = { viewModel.previewVoiceSample(it) },
+                            onTextChange = { viewModel.updateTtsInputText(it) },
+                            onSpeechRateChange = { viewModel.updateTtsSpeechRate(it) },
+                            onSubtitleFontSizeChange = { viewModel.updateSubtitleStyle(fontSizeSp = it) },
+                            onRenderTts = {
+                                viewModel.renderOfflineTtsAndAttachSubtitle(
+                                    activity = activity,
+                                    onComplete = { showTtsSheet = false }
+                                )
+                            }
                         )
                     }
-                )
+                }
             }
         }
 
         // BẢNG 2: THÊM TIÊU ĐỀ + LÀM MỜ
         if (showTextCreatorSheet) {
-            val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-            ModalBottomSheet(
+            Dialog(
                 onDismissRequest = { showTextCreatorSheet = false },
-                sheetState = sheetState,
-                containerColor = Color(0xFF161924)
+                properties = DialogProperties(usePlatformDefaultWidth = false)
             ) {
-                AddTextOverlaySheet(
-                    onAddText = { text, fontSize, colorHex, opacity, blurDp ->
-                        viewModel.addTextOverlay(
-                            text = text,
-                            fontSizeSp = fontSize,
-                            colorHex = colorHex,
-                            opacity = opacity,
-                            blurRadiusDp = blurDp
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color(0x99000000))
+                        .clickable { showTextCreatorSheet = false },
+                    contentAlignment = Alignment.BottomCenter
+                ) {
+                    Surface(
+                        color = Color(0xFF161924),
+                        shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = false) {}
+                    ) {
+                        AddTextOverlaySheet(
+                            onDismiss = { showTextCreatorSheet = false },
+                            onAddText = { text, fontSize, colorHex, opacity, blurDp ->
+                                viewModel.addTextOverlay(
+                                    text = text,
+                                    fontSizeSp = fontSize,
+                                    colorHex = colorHex,
+                                    opacity = opacity,
+                                    blurRadiusDp = blurDp
+                                )
+                                showTextCreatorSheet = false
+                            }
                         )
-                        showTextCreatorSheet = false
                     }
-                )
+                }
             }
         }
 
         // BẢNG 3: THÊM STICKER + LÀM MỜ
         if (showStickerCreatorSheet) {
-            val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-            ModalBottomSheet(
+            Dialog(
                 onDismissRequest = { showStickerCreatorSheet = false },
-                sheetState = sheetState,
-                containerColor = Color(0xFF161924)
+                properties = DialogProperties(usePlatformDefaultWidth = false)
             ) {
-                AddStickerOverlaySheet(
-                    onPickPngFromDevice = {
-                        stickerPngPickerLauncher.launch("image/*")
-                    },
-                    onCreateSampleBadgePng = { label ->
-                        viewModel.addSampleLogoPngOverlay(label)
-                        showStickerCreatorSheet = false
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color(0x99000000))
+                        .clickable { showStickerCreatorSheet = false },
+                    contentAlignment = Alignment.BottomCenter
+                ) {
+                    Surface(
+                        color = Color(0xFF161924),
+                        shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = false) {}
+                    ) {
+                        AddStickerOverlaySheet(
+                            onDismiss = { showStickerCreatorSheet = false },
+                            onPickPngFromDevice = {
+                                stickerPngPickerLauncher.launch("image/*")
+                            },
+                            onCreateSampleBadgePng = { label ->
+                                viewModel.addSampleLogoPngOverlay(label)
+                                showStickerCreatorSheet = false
+                            }
+                        )
                     }
-                )
+                }
             }
         }
 
@@ -899,10 +956,12 @@ private fun SubtitleFontSizeAndStyleBar(
 @Composable
 private fun SelectedTextBlurAndOpacityBar(
     item: CanvasTextOverlayItem,
+    onUpdateText: (String) -> Unit,
     onUpdateOpacity: (Float) -> Unit,
     onUpdateBlur: (Float) -> Unit,
     onUpdateFontSize: (Float) -> Unit
 ) {
+    val context = LocalContext.current
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -947,6 +1006,37 @@ private fun SelectedTextBlurAndOpacityBar(
                     .padding(horizontal = 8.dp, vertical = 2.dp)
             ) {
                 Text("+", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+            }
+
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(Color(0xFF00E676))
+                    .clickable {
+                        val pasted = readClipboardText(context)
+                        if (pasted.isNotBlank()) {
+                            onUpdateText(pasted.take(120))
+                            Toast.makeText(context, "📋 Đã dán vào Tiêu đề", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(context, "Bộ nhớ tạm trống", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    .padding(horizontal = 6.dp, vertical = 3.dp)
+            ) {
+                Text("📋 Dán", color = Color.Black, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+            }
+
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(Color(0xFF00E5FF))
+                    .clickable {
+                        copyTextToClipboard(context, item.text)
+                        Toast.makeText(context, "📄 Đã sao chép Tiêu đề", Toast.LENGTH_SHORT).show()
+                    }
+                    .padding(horizontal = 6.dp, vertical = 3.dp)
+            ) {
+                Text("📄 Copy", color = Color.Black, fontSize = 10.sp, fontWeight = FontWeight.Bold)
             }
         }
 
@@ -1302,11 +1392,208 @@ private fun ExportFormatSelectionDialog(
     }
 }
 
+private fun readClipboardText(context: Context): String {
+    return try {
+        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        val clip = cm?.primaryClip
+        if (clip != null && clip.itemCount > 0) {
+            clip.getItemAt(0).coerceToText(context)?.toString() ?: ""
+        } else {
+            ""
+        }
+    } catch (_: Exception) {
+        ""
+    }
+}
+
+private fun copyTextToClipboard(context: Context, text: String) {
+    try {
+        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        cm?.setPrimaryClip(ClipData.newPlainText("LKHK.TTS", text))
+    } catch (_: Exception) {
+    }
+}
+
+/**
+ * Thanh công cụ Copy - Paste 1 chạm cho mọi ô nhập Text (hỗ trợ cả nhấn giữ mặc định của Android lẫn nút bấm trực tiếp).
+ */
+@Composable
+private fun TextCopyPasteToolbar(
+    textFieldValue: TextFieldValue,
+    maxLength: Int,
+    onUpdateValue: (TextFieldValue) -> Unit
+) {
+    val context = LocalContext.current
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // 1. Nút Dán (Paste chèn vào vị trí con trỏ hoặc vùng đang bôi đen)
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(6.dp))
+                .background(Color(0xFF00E676))
+                .clickable {
+                    val clipText = readClipboardText(context)
+                    if (clipText.isEmpty()) {
+                        Toast.makeText(context, "Bộ nhớ tạm (Clipboard) đang trống!", Toast.LENGTH_SHORT).show()
+                        return@clickable
+                    }
+                    val cur = textFieldValue.text
+                    val minSel = textFieldValue.selection.min.coerceIn(0, cur.length)
+                    val maxSel = textFieldValue.selection.max.coerceIn(minSel, cur.length)
+                    val merged = (cur.substring(0, minSel) + clipText + cur.substring(maxSel)).take(maxLength)
+                    val nextCursor = (minSel + clipText.length).coerceAtMost(merged.length)
+                    onUpdateValue(
+                        TextFieldValue(
+                            text = merged,
+                            selection = TextRange(nextCursor)
+                        )
+                    )
+                    Toast.makeText(context, "📋 Đã dán văn bản (${clipText.length} ký tự)", Toast.LENGTH_SHORT).show()
+                }
+                .padding(horizontal = 10.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Default.ContentPaste,
+                contentDescription = "Dán",
+                tint = Color.Black,
+                modifier = Modifier.size(14.dp)
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text("Dán (Paste)", color = Color.Black, fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
+        }
+
+        // 2. Nút Dán Thay Thế (Xóa nội dung cũ và dán mới 1 chạm)
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(6.dp))
+                .background(Color(0xFFFFD54F))
+                .clickable {
+                    val clipText = readClipboardText(context)
+                    if (clipText.isEmpty()) {
+                        Toast.makeText(context, "Bộ nhớ tạm (Clipboard) đang trống!", Toast.LENGTH_SHORT).show()
+                        return@clickable
+                    }
+                    val replaced = clipText.take(maxLength)
+                    onUpdateValue(
+                        TextFieldValue(
+                            text = replaced,
+                            selection = TextRange(replaced.length)
+                        )
+                    )
+                    Toast.makeText(context, "📋 Đã dán thay thế (${replaced.length} ký tự)", Toast.LENGTH_SHORT).show()
+                }
+                .padding(horizontal = 10.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Default.ContentPaste,
+                contentDescription = "Dán đè",
+                tint = Color.Black,
+                modifier = Modifier.size(14.dp)
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text("Dán Đè", color = Color.Black, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+        }
+
+        // 3. Nút Copy (Sao chép vùng đang bôi đen hoặc toàn bộ văn bản)
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(6.dp))
+                .background(Color(0xFF00E5FF))
+                .clickable {
+                    val cur = textFieldValue.text
+                    if (cur.isEmpty()) {
+                        Toast.makeText(context, "Ô văn bản đang trống!", Toast.LENGTH_SHORT).show()
+                        return@clickable
+                    }
+                    val minSel = textFieldValue.selection.min.coerceIn(0, cur.length)
+                    val maxSel = textFieldValue.selection.max.coerceIn(minSel, cur.length)
+                    val targetCopy = if (maxSel > minSel) cur.substring(minSel, maxSel) else cur
+                    copyTextToClipboard(context, targetCopy)
+                    Toast.makeText(context, "📄 Đã Copy (${targetCopy.length} ký tự)", Toast.LENGTH_SHORT).show()
+                }
+                .padding(horizontal = 10.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Default.ContentCopy,
+                contentDescription = "Copy",
+                tint = Color.Black,
+                modifier = Modifier.size(14.dp)
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text("Copy", color = Color.Black, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+        }
+
+        // 4. Nút Chọn hết (Select All)
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(6.dp))
+                .background(Color(0xFF283246))
+                .border(1.dp, Color(0xFF64B5F6), RoundedCornerShape(6.dp))
+                .clickable {
+                    val len = textFieldValue.text.length
+                    onUpdateValue(
+                        textFieldValue.copy(selection = TextRange(0, len))
+                    )
+                }
+                .padding(horizontal = 8.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Default.SelectAll,
+                contentDescription = "Chọn hết",
+                tint = Color(0xFF80D8FF),
+                modifier = Modifier.size(14.dp)
+            )
+            Spacer(modifier = Modifier.width(3.dp))
+            Text("Chọn hết", color = Color(0xFF80D8FF), fontSize = 11.sp, fontWeight = FontWeight.Medium)
+        }
+
+        // 5. Nút Xóa trắng
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(6.dp))
+                .background(Color(0xFF3E2723))
+                .border(1.dp, Color(0xFFFF8A80), RoundedCornerShape(6.dp))
+                .clickable {
+                    onUpdateValue(TextFieldValue(""))
+                }
+                .padding(horizontal = 8.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Default.Delete,
+                contentDescription = "Xóa",
+                tint = Color(0xFFFF8A80),
+                modifier = Modifier.size(14.dp)
+            )
+            Spacer(modifier = Modifier.width(3.dp))
+            Text("Xóa", color = Color(0xFFFF8A80), fontSize = 11.sp, fontWeight = FontWeight.Medium)
+        }
+    }
+}
+
 @Composable
 private fun AddTextOverlaySheet(
+    onDismiss: () -> Unit,
     onAddText: (text: String, fontSizeSp: Float, colorHex: Long, opacity: Float, blurDp: Float) -> Unit
 ) {
-    var inputText by remember { mutableStateOf("Tiêu đề Video") }
+    var textFieldValue by remember {
+        mutableStateOf(
+            TextFieldValue(
+                text = "Tiêu đề Video",
+                selection = TextRange(13)
+            )
+        )
+    }
     var fontSizeSp by remember { mutableFloatStateOf(20f) }
     var opacity by remember { mutableFloatStateOf(1.0f) }
     var blurDp by remember { mutableFloatStateOf(0f) }
@@ -1326,20 +1613,36 @@ private fun AddTextOverlaySheet(
             .verticalScroll(rememberScrollState())
             .navigationBarsPadding()
             .imePadding()
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Text(
-            text = "🔤 Thêm Tiêu đề & Làm Mờ",
-            color = Color.White,
-            fontSize = 16.sp,
-            fontWeight = FontWeight.Bold
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "🔤 Thêm Tiêu đề & Làm Mờ",
+                color = Color.White,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold
+            )
+            IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
+                Icon(Icons.Default.Close, contentDescription = "Đóng", tint = Color.White)
+            }
+        }
+
+        // Thanh công cụ Copy - Paste cho mục Tiêu đề
+        TextCopyPasteToolbar(
+            textFieldValue = textFieldValue,
+            maxLength = 200,
+            onUpdateValue = { textFieldValue = it }
         )
 
         OutlinedTextField(
-            value = inputText,
-            onValueChange = { inputText = it },
-            label = { Text("Nội dung Tiêu đề hiển thị trên Video") },
+            value = textFieldValue,
+            onValueChange = { textFieldValue = it },
+            label = { Text("Nội dung Tiêu đề (Hỗ trợ Copy - Paste)") },
             modifier = Modifier.fillMaxWidth()
         )
 
@@ -1407,7 +1710,7 @@ private fun AddTextOverlaySheet(
         }
 
         Button(
-            onClick = { onAddText(inputText, fontSizeSp, selectedColorHex, opacity, blurDp) },
+            onClick = { onAddText(textFieldValue.text, fontSizeSp, selectedColorHex, opacity, blurDp) },
             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00C853)),
             modifier = Modifier.fillMaxWidth()
         ) {
@@ -1420,6 +1723,7 @@ private fun AddTextOverlaySheet(
 
 @Composable
 private fun AddStickerOverlaySheet(
+    onDismiss: () -> Unit,
     onPickPngFromDevice: () -> Unit,
     onCreateSampleBadgePng: (String) -> Unit
 ) {
@@ -1431,15 +1735,24 @@ private fun AddStickerOverlaySheet(
             .verticalScroll(rememberScrollState())
             .navigationBarsPadding()
             .imePadding()
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Text(
-            text = "🖼️ Thêm Sticker (Làm Mờ & Kéo Thả Tự Do)",
-            color = Color.White,
-            fontSize = 16.sp,
-            fontWeight = FontWeight.Bold
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "🖼️ Thêm Sticker (Làm Mờ & Kéo Thả Tự Do)",
+                color = Color.White,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold
+            )
+            IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
+                Icon(Icons.Default.Close, contentDescription = "Đóng", tint = Color.White)
+            }
+        }
 
         Button(
             onClick = onPickPngFromDevice,
@@ -1496,6 +1809,7 @@ private fun OfflineTtsCreatorSheet(
     subtitleFontSizeSp: Float,
     maxCharQuota: Int,
     isSynthesizing: Boolean,
+    onDismiss: () -> Unit,
     onSelectVoice: (OfflineVoiceProfile) -> Unit,
     onPreviewVoice: (OfflineVoiceProfile) -> Unit,
     onTextChange: (String) -> Unit,
@@ -1512,15 +1826,6 @@ private fun OfflineTtsCreatorSheet(
         )
     }
 
-    LaunchedEffect(inputText) {
-        if (inputText != localTextFieldValue.text) {
-            localTextFieldValue = localTextFieldValue.copy(
-                text = inputText,
-                selection = TextRange(inputText.length)
-            )
-        }
-    }
-
     val currentLength = localTextFieldValue.text.length
 
     Column(
@@ -1529,7 +1834,7 @@ private fun OfflineTtsCreatorSheet(
             .verticalScroll(rememberScrollState())
             .navigationBarsPadding()
             .imePadding()
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Row(
@@ -1543,18 +1848,26 @@ private fun OfflineTtsCreatorSheet(
                 fontSize = 16.sp,
                 fontWeight = FontWeight.Bold
             )
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(Color(0xFF153827))
-                    .padding(horizontal = 8.dp, vertical = 4.dp)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text(
-                    text = "$currentLength/$maxCharQuota ký tự",
-                    color = Color(0xFF69F0AE),
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold
-                )
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(Color(0xFF153827))
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Text(
+                        text = "$currentLength/$maxCharQuota ký tự",
+                        color = Color(0xFF69F0AE),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
+                    Icon(Icons.Default.Close, contentDescription = "Đóng", tint = Color.White)
+                }
             }
         }
 
@@ -1614,6 +1927,16 @@ private fun OfflineTtsCreatorSheet(
             }
         }
 
+        // Thanh công cụ Copy - Paste 1 chạm + hỗ trợ nhấn giữ Copy/Paste trực tiếp
+        TextCopyPasteToolbar(
+            textFieldValue = localTextFieldValue,
+            maxLength = maxCharQuota,
+            onUpdateValue = { updatedValue ->
+                localTextFieldValue = updatedValue
+                onTextChange(updatedValue.text)
+            }
+        )
+
         OutlinedTextField(
             value = localTextFieldValue,
             onValueChange = { newValue ->
@@ -1633,7 +1956,7 @@ private fun OfflineTtsCreatorSheet(
                 onTextChange(cappedText)
             },
             label = {
-                Text("Nhập văn bản (${localTextFieldValue.text.length}/$maxCharQuota ký tự • Tự động sinh Sub phụ đề)")
+                Text("Nhập hoặc Dán văn bản (${localTextFieldValue.text.length}/$maxCharQuota ký tự)")
             },
             trailingIcon = {
                 if (localTextFieldValue.text.isNotEmpty()) {
@@ -1654,7 +1977,7 @@ private fun OfflineTtsCreatorSheet(
             },
             modifier = Modifier
                 .fillMaxWidth()
-                .height(110.dp)
+                .height(120.dp)
         )
 
         Row(
