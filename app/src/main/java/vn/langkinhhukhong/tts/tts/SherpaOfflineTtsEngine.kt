@@ -218,7 +218,8 @@ class SherpaOfflineTtsEngine(private val context: Context) {
                 }
 
                 val startSample = totalSamples1x
-                val segPcmBytes = floatSamplesToPcm16Le(floatSamples)
+                appendSilenceMs(VietnameseTtsTextProcessor.PRE_SEGMENT_BREATH_MS)
+                val segPcmBytes = floatSamplesToPcm16Le(floatSamples, sampleRate)
                 pcm1xOut.write(segPcmBytes)
                 totalSamples1x += floatSamples.size
                 val endSample = totalSamples1x
@@ -440,10 +441,15 @@ class SherpaOfflineTtsEngine(private val context: Context) {
         }.getOrNull()
     }
 
-    private fun floatSamplesToPcm16Le(samples: FloatArray): ByteArray {
+    private fun floatSamplesToPcm16Le(samples: FloatArray, sampleRate: Int): ByteArray {
         val bytes = ByteArray(samples.size * 2)
+        val fadeInSamples = minOf(samples.size, (sampleRate * 6) / 1000) // 6ms anti-pop ramp đầu câu
         var byteIdx = 0
-        for (sample in samples) {
+        for (i in samples.indices) {
+            var sample = samples[i]
+            if (i < fadeInSamples && fadeInSamples > 0) {
+                sample *= (i + 1).toFloat() / fadeInSamples.toFloat()
+            }
             // Soft-clip nhẹ ở ngưỡng ±0.98 để âm thanh điện thoại trong, to rõ mà không bị rè (clipping)
             val clamped = sample.coerceIn(-0.98f, 0.98f)
             val pcmShort = (clamped * 32767f).toInt().coerceIn(-32768, 32767)

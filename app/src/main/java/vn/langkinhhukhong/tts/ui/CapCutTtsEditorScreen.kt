@@ -90,7 +90,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
@@ -1389,7 +1391,27 @@ private fun OfflineTtsCreatorSheet(
     onSubtitleFontSizeChange: (Float) -> Unit,
     onRenderTts: () -> Unit
 ) {
-    val currentLength = inputText.trim().length
+    // Giữ trạng thái TextFieldValue đồng bộ trực tiếp tại UI để bộ gõ Tiếng Việt (Telex/VNI Gboard, Laban Key)
+    // không bao giờ bị mất dấu hoặc nhảy con trỏ ở các chữ cái đầu tiên do StateFlow recomposition.
+    var localTextFieldValue by remember {
+        mutableStateOf(
+            TextFieldValue(
+                text = inputText,
+                selection = TextRange(inputText.length)
+            )
+        )
+    }
+
+    LaunchedEffect(inputText) {
+        if (inputText != localTextFieldValue.text) {
+            localTextFieldValue = localTextFieldValue.copy(
+                text = inputText,
+                selection = TextRange(inputText.length)
+            )
+        }
+    }
+
+    val currentLength = localTextFieldValue.text.trim().length
     val needsAutoAd = remainingCharQuota <= 0 || currentLength > remainingCharQuota
 
     Column(
@@ -1484,10 +1506,42 @@ private fun OfflineTtsCreatorSheet(
         }
 
         OutlinedTextField(
-            value = inputText,
-            onValueChange = onTextChange,
+            value = localTextFieldValue,
+            onValueChange = { newValue ->
+                val cappedText = if (newValue.text.length > maxCharQuota) {
+                    newValue.text.take(maxCharQuota)
+                } else {
+                    newValue.text
+                }
+                localTextFieldValue = if (cappedText.length != newValue.text.length) {
+                    newValue.copy(
+                        text = cappedText,
+                        selection = TextRange(cappedText.length.coerceAtMost(newValue.selection.end))
+                    )
+                } else {
+                    newValue
+                }
+                onTextChange(cappedText)
+            },
             label = {
-                Text("Nhập văn bản (${inputText.length}/$maxCharQuota ký tự • Tự động sinh Sub phụ đề)")
+                Text("Nhập văn bản (${localTextFieldValue.text.length}/$maxCharQuota ký tự • Tự động sinh Sub phụ đề)")
+            },
+            trailingIcon = {
+                if (localTextFieldValue.text.isNotEmpty()) {
+                    IconButton(
+                        onClick = {
+                            localTextFieldValue = TextFieldValue("")
+                            onTextChange("")
+                        }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = "Xóa trắng",
+                            tint = Color(0xFFFF8A80),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
             },
             modifier = Modifier
                 .fillMaxWidth()

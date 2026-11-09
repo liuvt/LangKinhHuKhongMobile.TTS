@@ -31,21 +31,29 @@ data class PiperModelMetadata(
 object PiperModelConfigParser {
 
     private val espeakLock = Any()
+    private const val ESPEAK_DATA_VERSION_MARKER = ".espeak_pc_vi_v2"
 
     /**
-     * Đảm bảo thư mục `espeak-ng-data` đã được giải nén đầy đủ ra `filesDir/espeak-ng-data`.
+     * Đảm bảo thư mục `espeak-ng-data` (bản chuẩn PC `LangKinhHuKhong.TTS` kèm `vi_dict` gốc)
+     * đã được giải nén đầy đủ ra `filesDir/espeak-ng-data`.
      */
     fun ensureEspeakNgDataStaged(context: Context): File? = synchronized(espeakLock) {
         val targetRoot = File(context.filesDir, "espeak-ng-data")
         val phontabFile = File(targetRoot, "phontab")
         val viDictFile = File(targetRoot, "vi_dict")
-        if (phontabFile.exists() && phontabFile.length() > 1024L && viDictFile.exists()) {
+        val markerFile = File(targetRoot, ESPEAK_DATA_VERSION_MARKER)
+        if (phontabFile.exists() && phontabFile.length() > 1024L && viDictFile.exists() && markerFile.exists()) {
             return targetRoot
         }
 
         return runCatching {
             copyAssetTreeRecursively(context, "espeak-ng-data", targetRoot)
-            if (phontabFile.exists() && phontabFile.length() > 1024L) targetRoot else null
+            if (phontabFile.exists() && phontabFile.length() > 1024L) {
+                markerFile.writeText("pc-vi-v2", Charsets.UTF_8)
+                targetRoot
+            } else {
+                null
+            }
         }.getOrNull()
     }
 
@@ -145,34 +153,53 @@ object PiperModelConfigParser {
     }
 
     /**
-     * Đảm bảo file `.onnx` của Piper có đầy đủ `metadata_props` Protobuf (Field 14) mà `sherpa-onnx` yêu cầu:
-     * (`model_type=vits`, `comment=piper`, `has_espeak=1`, `language=Vietnamese`, `voice=vi`, `sample_rate`, `n_speakers`).
+     * Đảm bảo file `.onnx` của Piper có đầy đủ `metadata_props` Protobuf (Field 14) chuẩn cho `sherpa-onnx`:
+     * - Sử dụng nhánh `CoquiPhonemesToIds` (`comment=coqui`, `add_blank=1`, `blank_id=0`, `bos_id=1`, `eos_id=2`, `use_eos_bos=1`)
+     *   để C++ `sherpa-onnx` luôn chèn đúng chuỗi `[BOS (1), PAD (0), p_0, PAD (0), p_1, ...]` giống hệt `piper.exe` (`phoneme_ids.cpp`),
+     *   khắc phục triệt để lỗi thiếu `PAD (0)` sau `BOS (1)` trong `PiperPhonemesToIdsVits` làm nuốt/méo các chữ cái đầu tiên của câu!
      */
     fun ensureSherpaOnnxMetadata(onnxFile: File, metadata: PiperModelMetadata) {
         if (!onnxFile.exists() || onnxFile.length() < 1024L) return
         runCatching {
             val checkTailBytes = minOf(1024L, onnxFile.length()).toInt()
             val tailBuf = ByteArray(checkTailBytes)
-            RandomAccessFile(onnxFile, "r").use { raf ->
-                raf.seek(onnxFile.length() - checkTailBytes)
+            val seekStart = onnxFile.length() - checkTailBytes
+            RandomAccessFile(onnxFile, "rw").use { raf ->
+                raf.seek(seekStart)
                 raf.readFully(tailBuf)
-            }
-            val tailAscii = String(tailBuf, Charsets.ISO_8859_1)
-            if (tailAscii.contains("comment") && tailAscii.contains("piper") && tailAscii.contains("sample_rate")) {
-                return
+                val tailAscii = String(tailBuf, Charsets.ISO_8859_1)
+
+                // Nếu file .onnx cũ trên máy đang mang comment="piper" (5 bytes), đổi trực tiếp sang "coqui" (5 bytes)
+                if (tailAscii.contains("piper")) {
+                    val patched = tailAscii.replace("piper", "coqui").toByteArray(Charsets.ISO_8859_1)
+                    if (patched.size == tailBuf.size) {
+                        raf.seek(seekStart)
+                        raf.write(patched)
+                    }
+                }
+
+                if (tailAscii.contains("add_blank") && tailAscii.contains("bos_id") && tailAscii.contains("sample_rate")) {
+                    return
+                }
             }
 
             val props = linkedMapOf(
                 "model_type" to "vits",
-                "comment" to "piper",
+                "comment" to "coqui",
                 "has_espeak" to "1",
                 "language" to "Vietnamese",
                 "voice" to metadata.espeakVoice.ifBlank { "vi" },
                 "sample_rate" to metadata.sampleRate.toString(),
-                "n_speakers" to metadata.numSpeakers.coerceAtLeast(1).toString()
+                "n_speakers" to metadata.numSpeakers.coerceAtLeast(1).toString(),
+                "add_blank" to "1",
+                "blank_id" to "0",
+                "bos_id" to "1",
+                "eos_id" to "2",
+                "pad_id" to "0",
+                "use_eos_bos" to "1"
             )
 
-            val encodedBlob = ByteArrayOutputStream(160)
+            val encodedBlob = ByteArrayOutputStream(256)
             for ((k, v) in props) {
                 encodedBlob.write(encodeProtobufMetadataProp(k, v))
             }

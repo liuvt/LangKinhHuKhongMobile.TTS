@@ -96,25 +96,37 @@ jobs:
 
               onnx_path = json_path[:-5]
               if os.path.exists(onnx_path) and os.path.getsize(onnx_path) > 1024 * 1024:
-                  with open(onnx_path, 'rb') as mf:
-                      mf.seek(-512, 2)
-                      tail = mf.read(512)
-                  if not (b'comment' in tail and b'piper' in tail and b'sample_rate' in tail):
-                      meta = {
-                          'model_type': 'vits',
-                          'comment': 'piper',
-                          'has_espeak': '1',
-                          'language': 'Vietnamese',
-                          'voice': data.get('espeak', {}).get('voice', 'vi'),
-                          'sample_rate': str(data.get('audio', {}).get('sample_rate', 22050)),
-                          'n_speakers': str(data.get('num_speakers', 1)),
-                      }
-                      blob = b''.join(encode_metadata_prop(k, v) for k, v in meta.items())
-                      with open(onnx_path, 'ab') as mf:
+                  with open(onnx_path, 'r+b') as mf:
+                      size = os.path.getsize(onnx_path)
+                      seek_pos = max(0, size - 1024)
+                      mf.seek(seek_pos)
+                      tail = mf.read(size - seek_pos)
+                      if b'piper' in tail:
+                          tail = tail.replace(b'piper', b'coqui')
+                          mf.seek(seek_pos)
+                          mf.write(tail)
+                      if not (b'add_blank' in tail and b'bos_id' in tail and b'sample_rate' in tail):
+                          meta = {
+                              'model_type': 'vits',
+                              'comment': 'coqui',
+                              'has_espeak': '1',
+                              'language': 'Vietnamese',
+                              'voice': data.get('espeak', {}).get('voice', 'vi'),
+                              'sample_rate': str(data.get('audio', {}).get('sample_rate', 22050)),
+                              'n_speakers': str(data.get('num_speakers', 1)),
+                              'add_blank': '1',
+                              'blank_id': '0',
+                              'bos_id': '1',
+                              'eos_id': '2',
+                              'pad_id': '0',
+                              'use_eos_bos': '1',
+                          }
+                          blob = b''.join(encode_metadata_prop(k, v) for k, v in meta.items())
+                          mf.seek(0, 2)
                           mf.write(blob)
-                      print('Injected Sherpa-ONNX metadata into:', onnx_path)
-                  else:
-                      print('Sherpa-ONNX metadata already present in:', onnx_path)
+                          print('Injected Sherpa-ONNX BOS+PAD metadata into:', onnx_path)
+                      else:
+                          print('Sherpa-ONNX BOS+PAD metadata already present in:', onnx_path)
           "
 
       - name: Build Runnable APK (assembleDebug)

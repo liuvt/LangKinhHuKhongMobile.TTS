@@ -987,7 +987,8 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             return
         }
 
-        val targetOffsetMs = (activeClip.trimStartMs + (playheadMs - activeClip.timelineStartMs)).toInt()
+        val relativeClipOffsetMs = (playheadMs - activeClip.timelineStartMs).coerceAtLeast(0L)
+        val targetOffsetMs = (activeClip.trimStartMs + relativeClipOffsetMs).toInt()
         val existingMp = activeTtsMediaPlayer
         val needsRestart = activeClipPlayingId != activeClip.id || forceSeek || existingMp == null
 
@@ -997,7 +998,9 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             if (file.exists() && file.length() > 64L) {
                 runCatching {
                     val mp = createSpeechMediaPlayer(file.absolutePath, activeClip.volume)
-                    if (targetOffsetMs > 0) {
+                    // Không gọi seekTo ở 0..160ms đầu file khi chưa cắt đầu (trimStartMs == 0)
+                    // để tránh Android MediaPlayer/AudioTrack xả buffer làm mất các chữ cái đầu tiên!
+                    if (activeClip.trimStartMs > 0L || relativeClipOffsetMs > 160L) {
                         mp.seekTo(targetOffsetMs)
                     }
                     mp.start()

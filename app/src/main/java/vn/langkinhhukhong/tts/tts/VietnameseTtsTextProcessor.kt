@@ -13,7 +13,8 @@ import java.util.Locale
  */
 object VietnameseTtsTextProcessor {
 
-    const val INITIAL_PAUSE_MS = 160
+    const val INITIAL_PAUSE_MS = 260
+    const val PRE_SEGMENT_BREATH_MS = 45
     const val PERIOD_PAUSE_MS = 310
     const val EXCLAMATION_PAUSE_MS = 350
     const val QUESTION_PAUSE_MS = 330
@@ -217,12 +218,19 @@ object VietnameseTtsTextProcessor {
         return result
     }
 
+    private val leadingInvisibleOrBulletRegex = Regex("""^[\uFEFF\u200B\u200C\u200D\s\-–—•*+]+""")
+
     /**
-     * Tiền xử lý từng câu trước khi đưa vào Piper/Sherpa-ONNX (`SpeechPacing.PrepareTextForPiper`).
+     * Tiền xử lý từng câu trước khi đưa vào Piper/Sherpa-ONNX (`SpeechPacing.PrepareTextForPiper`):
+     * - Loại bỏ ký tự ẩn (BOM/Zero-width) và gạch đầu dòng đầu câu để eSpeak-ng không đọc nhầm chữ cái đầu tiên.
+     * - Chuẩn hóa Unicode NFC và xử lý dấu ba chấm.
      */
     fun prepareTextForPiper(text: String): String {
         if (text.isBlank()) return text
         val normalized = Normalizer.normalize(text.trim(), Normalizer.Form.NFC)
+            .replace(leadingInvisibleOrBulletRegex, "")
+            .trim()
+        if (normalized.isEmpty()) return ""
         val step1 = trailingEllipsisRegex.replace(normalized, ".$1")
         return anyEllipsisRegex.replace(step1, ",")
     }
