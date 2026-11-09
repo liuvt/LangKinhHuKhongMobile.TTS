@@ -85,14 +85,28 @@ data class EditorUiState(
     val activeVoiceClipAtPlayhead: VoiceSubtitleClip?
         get() = voiceClips.lastOrNull { playheadMs in it.timelineStartMs..it.timelineEndMs }
 
+    /**
+     * Hiển thị cụm phụ đề ngắn gọn (tối đa 7 từ quanh từ đang đọc) chuẩn CapCut để dễ nhìn và chỉnh cỡ chữ.
+     */
     val currentSubtitleTokens: List<TimelineSubtitleToken>
-        get() = activeVoiceClipAtPlayhead?.getMappedWords(playheadMs) ?: emptyList()
+        get() {
+            val allTokens = activeVoiceClipAtPlayhead?.getMappedWords(playheadMs) ?: return emptyList()
+            if (allTokens.size <= 7) return allTokens
+            val chunks = allTokens.chunked(7)
+            return chunks.firstOrNull { chunk ->
+                chunk.any { it.isHighlighted } ||
+                    playheadMs in chunk.first().timelineStartMs..chunk.last().timelineEndMs
+            } ?: chunks.first()
+        }
 
     val visibleTextOverlaysAtPlayhead: List<CanvasTextOverlayItem>
         get() = textOverlays.filter { it.isVisibleAt(playheadMs) }
 
     val visibleImageOverlaysAtPlayhead: List<CanvasImageOverlayItem>
         get() = imageOverlays.filter { it.isVisibleAt(playheadMs) }
+
+    val selectedVoiceClip: VoiceSubtitleClip?
+        get() = voiceClips.firstOrNull { it.id == selectedClipId }
 
     val selectedTextOverlay: CanvasTextOverlayItem?
         get() = textOverlays.firstOrNull { it.id == selectedClipId }
@@ -399,6 +413,29 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    /**
+     * Điều chỉnh Size chữ Phụ đề (fontSizeSp: 10..36sp) và Độ rõ/Làm mờ Phụ đề.
+     */
+    fun updateSubtitleStyle(
+        fontSizeSp: Float? = null,
+        opacity: Float? = null,
+        blurRadiusDp: Float? = null
+    ) {
+        _uiState.update { state ->
+            val cur = state.subtitleStyle
+            val nextSize = fontSizeSp?.coerceIn(10f, 36f) ?: cur.fontSizeSp
+            val nextOpacity = opacity?.coerceIn(0.1f, 1.0f) ?: cur.opacity
+            val nextBlur = blurRadiusDp?.coerceIn(0f, 20f) ?: cur.blurRadiusDp
+            state.copy(
+                subtitleStyle = cur.copy(
+                    fontSizeSp = nextSize,
+                    opacity = nextOpacity,
+                    blurRadiusDp = nextBlur
+                )
+            )
+        }
+    }
+
     // =========================================================================
     // 3. NHẬP CHỮ (TEXT) & ICON / LOGO PNG (LÀM MỜ + KÉO THẢ VỊ TRÍ BẤT KỲ)
     // =========================================================================
@@ -450,7 +487,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     if (item.id == targetId) {
                         item.copy(
                             text = text ?: item.text,
-                            fontSizeSp = fontSizeSp?.coerceIn(10f, 44f) ?: item.fontSizeSp,
+                            fontSizeSp = fontSizeSp?.coerceIn(10f, 56f) ?: item.fontSizeSp,
                             colorHex = colorHex ?: item.colorHex,
                             opacity = opacity?.coerceIn(0.05f, 1.0f) ?: item.opacity,
                             blurRadiusDp = blurRadiusDp?.coerceIn(0f, 25f) ?: item.blurRadiusDp

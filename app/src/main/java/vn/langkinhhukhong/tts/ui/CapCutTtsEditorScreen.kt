@@ -180,9 +180,10 @@ fun CapCutTtsEditorScreen(
                 )
             }
 
-            // 3. THANH CHỈNH NHANH LÀM MỜ (OPACITY & BLUR) KHI CHẠM CHỌN TEXT HOẶC LOGO PNG
+            // 3. THANH CHỈNH SIZE CHỮ PHỤ ĐỀ / SIZE TEXT / LÀM MỜ LOGO PNG
             val selectedText = state.selectedTextOverlay
             val selectedImage = state.selectedImageOverlay
+            val selectedVoice = state.selectedVoiceClip
             if (selectedText != null) {
                 SelectedTextBlurAndOpacityBar(
                     item = selectedText,
@@ -196,6 +197,12 @@ fun CapCutTtsEditorScreen(
                     onUpdateOpacity = { viewModel.updateSelectedImageOverlay(opacity = it) },
                     onUpdateBlur = { viewModel.updateSelectedImageOverlay(blurRadiusDp = it) },
                     onUpdateSize = { viewModel.updateSelectedImageOverlay(sizeDp = it) }
+                )
+            } else if (selectedVoice != null || state.selectedClipId == "SUBTITLE_STYLE" || state.voiceClips.isNotEmpty()) {
+                SubtitleFontSizeAndStyleBar(
+                    subtitleStyle = state.subtitleStyle,
+                    onUpdateFontSize = { viewModel.updateSubtitleStyle(fontSizeSp = it) },
+                    onUpdateOpacity = { viewModel.updateSubtitleStyle(opacity = it) }
                 )
             }
 
@@ -270,11 +277,13 @@ fun CapCutTtsEditorScreen(
                     selectedVoice = state.selectedVoiceProfile,
                     inputText = state.ttsInputText,
                     speechRate = state.ttsSpeechRate,
+                    subtitleFontSizeSp = state.subtitleStyle.fontSizeSp,
                     isSynthesizing = state.isSynthesizingTts,
                     onSelectVoice = { viewModel.selectVoiceProfile(it) },
                     onPreviewVoice = { viewModel.previewVoiceSample(it) },
                     onTextChange = { viewModel.updateTtsInputText(it) },
                     onSpeechRateChange = { viewModel.updateTtsSpeechRate(it) },
+                    onSubtitleFontSizeChange = { viewModel.updateSubtitleStyle(fontSizeSp = it) },
                     onRenderTts = {
                         viewModel.renderOfflineTtsAndAttachSubtitle(
                             activity = activity,
@@ -656,11 +665,12 @@ private fun Vertical9By16PreviewStage(
             }
         }
 
-        // 4. KHUNG PHỤ ĐỀ VOICE AI KARAOKE (Kéo thả vị trí bất kỳ trên Khu View 9:16)
+        // 4. KHUNG PHỤ ĐỀ VOICE AI KARAOKE (Chạm để chỉnh Size chữ Phụ đề + Kéo thả vị trí bất kỳ)
         if (subtitleTokens.isNotEmpty()) {
             val currentOnDragSub by rememberUpdatedState(onDragSubtitle)
             val subOffsetX = ((subtitleStyle.normalizedX - 0.5f) * stageWidthPx).roundToInt()
             val subOffsetY = ((subtitleStyle.normalizedY - 0.5f) * stageHeightPx).roundToInt()
+            val isSubSelected = selectedClipId == "SUBTITLE_STYLE"
 
             Box(
                 modifier = Modifier
@@ -669,15 +679,23 @@ private fun Vertical9By16PreviewStage(
                     .padding(horizontal = 10.dp)
                     .alpha(subtitleStyle.opacity.coerceIn(0.1f, 1.0f))
                     .background(Color(0xCC000000), RoundedCornerShape(10.dp))
-                    .border(1.dp, Color(0x99FFD600), RoundedCornerShape(10.dp))
+                    .border(
+                        width = if (isSubSelected) 2.dp else 1.dp,
+                        color = if (isSubSelected) Color(0xFF00E5FF) else Color(0x99FFD600),
+                        shape = RoundedCornerShape(10.dp)
+                    )
+                    .clickable { onSelectOverlay("SUBTITLE_STYLE") }
                     .pointerInput(stageWidthPx, stageHeightPx) {
-                        detectDragGestures { change, dragAmount ->
-                            change.consume()
-                            currentOnDragSub(
-                                dragAmount.x / stageWidthPx,
-                                dragAmount.y / stageHeightPx
-                            )
-                        }
+                        detectDragGestures(
+                            onDragStart = { onSelectOverlay("SUBTITLE_STYLE") },
+                            onDrag = { change, dragAmount ->
+                                change.consume()
+                                currentOnDragSub(
+                                    dragAmount.x / stageWidthPx,
+                                    dragAmount.y / stageHeightPx
+                                )
+                            }
+                        )
                     }
                     .padding(horizontal = 10.dp, vertical = 6.dp)
             ) {
@@ -690,12 +708,81 @@ private fun Vertical9By16PreviewStage(
                             text = "${token.word} ",
                             color = if (token.isHighlighted) Color(0xFFFFEA00) else Color.White,
                             fontSize = subtitleStyle.fontSizeSp.sp,
+                            lineHeight = (subtitleStyle.fontSizeSp * 1.25f).sp,
                             fontWeight = if (token.isHighlighted) FontWeight.ExtraBold else FontWeight.SemiBold
                         )
                     }
                 }
             }
         }
+    }
+}
+
+/**
+ * Thanh điều chỉnh trực tiếp SIZE TEXT PHỤ ĐỀ (10sp -> 36sp) và Độ rõ Phụ đề.
+ */
+@Composable
+private fun SubtitleFontSizeAndStyleBar(
+    subtitleStyle: SubtitleOverlayStyle,
+    onUpdateFontSize: (Float) -> Unit,
+    onUpdateOpacity: (Float) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFF1A2218))
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Text(
+            text = "💬 Size Sub: ${subtitleStyle.fontSizeSp.toInt()}sp",
+            color = Color(0xFFFFEA00),
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.width(96.dp)
+        )
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(4.dp))
+                .background(Color(0xFF2E3B2B))
+                .clickable { onUpdateFontSize((subtitleStyle.fontSizeSp - 1f).coerceAtLeast(10f)) }
+                .padding(horizontal = 7.dp, vertical = 2.dp)
+        ) {
+            Text("-", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+        }
+        Slider(
+            value = subtitleStyle.fontSizeSp,
+            onValueChange = onUpdateFontSize,
+            valueRange = 10f..36f,
+            modifier = Modifier
+                .weight(1.2f)
+                .height(22.dp)
+        )
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(4.dp))
+                .background(Color(0xFF2E3B2B))
+                .clickable { onUpdateFontSize((subtitleStyle.fontSizeSp + 1f).coerceAtMost(36f)) }
+                .padding(horizontal = 7.dp, vertical = 2.dp)
+        ) {
+            Text("+", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+        }
+
+        Text(
+            text = "Rõ ${(subtitleStyle.opacity * 100).toInt()}%",
+            color = Color.White,
+            fontSize = 10.sp,
+            modifier = Modifier.width(50.dp)
+        )
+        Slider(
+            value = subtitleStyle.opacity,
+            onValueChange = onUpdateOpacity,
+            valueRange = 0.1f..1.0f,
+            modifier = Modifier
+                .weight(0.8f)
+                .height(22.dp)
+        )
     }
 }
 
@@ -710,8 +797,51 @@ private fun SelectedTextBlurAndOpacityBar(
         modifier = Modifier
             .fillMaxWidth()
             .background(Color(0xFF1B192E))
-            .padding(horizontal = 10.dp, vertical = 4.dp)
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(3.dp)
     ) {
+        // Dòng 1: Điều chỉnh Size Text (10sp -> 56sp) kèm nút - / +
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(
+                text = "🔤 Size Text: ${item.fontSizeSp.toInt()}sp",
+                color = Color(0xFF80D8FF),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.width(102.dp)
+            )
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(Color(0xFF312C51))
+                    .clickable { onUpdateFontSize((item.fontSizeSp - 2f).coerceAtLeast(10f)) }
+                    .padding(horizontal = 8.dp, vertical = 2.dp)
+            ) {
+                Text("-", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+            }
+            Slider(
+                value = item.fontSizeSp,
+                onValueChange = onUpdateFontSize,
+                valueRange = 10f..56f,
+                modifier = Modifier
+                    .weight(1f)
+                    .height(22.dp)
+            )
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(Color(0xFF312C51))
+                    .clickable { onUpdateFontSize((item.fontSizeSp + 2f).coerceAtMost(56f)) }
+                    .padding(horizontal = 8.dp, vertical = 2.dp)
+            ) {
+                Text("+", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+            }
+        }
+
+        // Dòng 2: Độ rõ (Opacity) & Làm mờ (Blur)
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
@@ -743,20 +873,6 @@ private fun SelectedTextBlurAndOpacityBar(
                 valueRange = 0f..20f,
                 modifier = Modifier
                     .weight(1f)
-                    .height(22.dp)
-            )
-            Text(
-                text = "Cỡ ${item.fontSizeSp.toInt()}",
-                color = Color(0xFF80D8FF),
-                fontSize = 10.sp,
-                modifier = Modifier.width(38.dp)
-            )
-            Slider(
-                value = item.fontSizeSp,
-                onValueChange = onUpdateFontSize,
-                valueRange = 12f..38f,
-                modifier = Modifier
-                    .weight(0.8f)
                     .height(22.dp)
             )
         }
@@ -1130,15 +1246,16 @@ private fun AddTextOverlaySheet(
 
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                text = "Cỡ chữ: ${fontSizeSp.toInt()} sp",
-                color = Color.White,
+                text = "Size Text: ${fontSizeSp.toInt()} sp",
+                color = Color(0xFF80D8FF),
+                fontWeight = FontWeight.Bold,
                 fontSize = 12.sp,
                 modifier = Modifier.width(145.dp)
             )
             Slider(
                 value = fontSizeSp,
                 onValueChange = { fontSizeSp = it },
-                valueRange = 12f..40f,
+                valueRange = 10f..56f,
                 modifier = Modifier.weight(1f)
             )
         }
@@ -1230,11 +1347,13 @@ private fun OfflineTtsCreatorSheet(
     selectedVoice: OfflineVoiceProfile,
     inputText: String,
     speechRate: Float,
+    subtitleFontSizeSp: Float,
     isSynthesizing: Boolean,
     onSelectVoice: (OfflineVoiceProfile) -> Unit,
     onPreviewVoice: (OfflineVoiceProfile) -> Unit,
     onTextChange: (String) -> Unit,
     onSpeechRateChange: (Float) -> Unit,
+    onSubtitleFontSizeChange: (Float) -> Unit,
     onRenderTts: () -> Unit
 ) {
     Column(
@@ -1320,12 +1439,31 @@ private fun OfflineTtsCreatorSheet(
                 text = "Tốc độ đọc: ${String.format("%.2fx", speechRate)}",
                 color = Color.White,
                 fontSize = 12.sp,
-                modifier = Modifier.width(120.dp)
+                modifier = Modifier.width(130.dp)
             )
             Slider(
                 value = speechRate,
                 onValueChange = onSpeechRateChange,
                 valueRange = 0.7f..1.5f,
+                modifier = Modifier.weight(1f)
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Size Text Phụ đề: ${subtitleFontSizeSp.toInt()}sp",
+                color = Color(0xFFFFEA00),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.width(130.dp)
+            )
+            Slider(
+                value = subtitleFontSizeSp,
+                onValueChange = onSubtitleFontSizeChange,
+                valueRange = 10f..36f,
                 modifier = Modifier.weight(1f)
             )
         }

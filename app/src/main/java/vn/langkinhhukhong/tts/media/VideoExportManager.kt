@@ -10,6 +10,7 @@ import android.net.Uri
 import android.text.Spannable
 import android.text.SpannableString
 import android.text.style.ForegroundColorSpan
+import android.text.style.RelativeSizeSpan
 import androidx.annotation.OptIn
 import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem
@@ -72,7 +73,7 @@ class VideoExportManager(private val context: Context) {
 
             val textureOverlays = mutableListOf<TextureOverlay>()
 
-            // 2A. Overlay Phụ đề Karaoke (Đặt theo đúng tọa độ X/Y và độ mờ người dùng đã kéo trên khu View)
+            // 2A. Overlay Phụ đề Karaoke (Đặt theo đúng tọa độ X/Y, Size Text Phụ đề và độ mờ người dùng đã kéo trên khu View)
             val subtitleOverlay = object : TextOverlay() {
                 override fun getText(presentationTimeUs: Long): SpannableString {
                     val currentMs = presentationTimeUs / 1000L
@@ -80,9 +81,28 @@ class VideoExportManager(private val context: Context) {
                         currentMs in clip.timelineStartMs..clip.timelineEndMs
                     } ?: return SpannableString("")
 
-                    val mappedWords = activeClip.getMappedWords(currentMs)
+                    val allTokens = activeClip.getMappedWords(currentMs)
+                    if (allTokens.isEmpty()) return SpannableString("")
+
+                    val chunks = allTokens.chunked(7)
+                    val mappedWords = chunks.firstOrNull { chunk ->
+                        chunk.any { it.isHighlighted }
+                    } ?: chunks.firstOrNull { chunk ->
+                        currentMs in chunk.first().timelineStartMs..chunk.last().timelineEndMs
+                    } ?: chunks.last()
+
                     val fullLine = mappedWords.joinToString(" ") { it.word }
                     val spannable = SpannableString(fullLine)
+
+                    val sizeRatio = (subtitleStyle.fontSizeSp / 15f).coerceIn(0.65f, 2.5f)
+                    if (spannable.isNotEmpty()) {
+                        spannable.setSpan(
+                            RelativeSizeSpan(sizeRatio),
+                            0,
+                            spannable.length,
+                            Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+                        )
+                    }
 
                     var charCursor = 0
                     for (token in mappedWords) {
@@ -111,7 +131,7 @@ class VideoExportManager(private val context: Context) {
             }
             textureOverlays.add(subtitleOverlay)
 
-            // 2B. Overlays cho các lớp Chữ (Text Overlays) kèm vị trí X/Y và Độ mờ (Opacity)
+            // 2B. Overlays cho các lớp Chữ (Text Overlays) kèm vị trí X/Y, Size Text và Độ mờ (Opacity)
             for (textItem in textOverlays) {
                 val customTextOverlay = object : TextOverlay() {
                     override fun getText(presentationTimeUs: Long): SpannableString {
@@ -121,12 +141,21 @@ class VideoExportManager(private val context: Context) {
                         val alphaInt = (textItem.opacity.coerceIn(0.05f, 1.0f) * 255).toInt()
                         val baseColor = textItem.colorHex.toInt()
                         val colorWithAlpha = (baseColor and 0x00FFFFFF) or (alphaInt shl 24)
-                        spannable.setSpan(
-                            ForegroundColorSpan(colorWithAlpha),
-                            0,
-                            spannable.length,
-                            Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
-                        )
+                        val sizeRatio = (textItem.fontSizeSp / 16f).coerceIn(0.6f, 3.5f)
+                        if (spannable.isNotEmpty()) {
+                            spannable.setSpan(
+                                RelativeSizeSpan(sizeRatio),
+                                0,
+                                spannable.length,
+                                Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+                            )
+                            spannable.setSpan(
+                                ForegroundColorSpan(colorWithAlpha),
+                                0,
+                                spannable.length,
+                                Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+                            )
+                        }
                         return spannable
                     }
 
