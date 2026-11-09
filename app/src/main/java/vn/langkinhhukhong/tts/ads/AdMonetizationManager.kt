@@ -2,8 +2,7 @@ package vn.langkinhhukhong.tts.ads
 
 import android.app.Activity
 import android.content.Context
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
+import android.util.Log
 import com.google.android.gms.ads.AdError
 import com.google.android.gms.ads.AdRequest
 import com.google.android.gms.ads.FullScreenContentCallback
@@ -13,190 +12,166 @@ import com.google.android.gms.ads.interstitial.InterstitialAd
 import com.google.android.gms.ads.interstitial.InterstitialAdLoadCallback
 import com.google.android.gms.ads.rewarded.RewardedAd
 import com.google.android.gms.ads.rewarded.RewardedAdLoadCallback
-import vn.langkinhhukhong.tts.model.MonetizationConfig
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * Quản lý Hạn mức 500 Ký tự & Tự động nhảy Quảng Cáo:
- *
- * - Cho phép sử dụng TẤT CẢ các giọng đọc (`Minh Khang`, `Ngọc Huyền`, `Lạc Phi`, `Minh Quang`, `VPBank` 5 giọng) không khóa giọng nào.
- * - Giới hạn hạn mức mỗi chu kỳ là **500 ký tự** ([MAX_CHARACTER_QUOTA]).
- * - Ngay khi dùng hết 500 ký tự (`remainingChars <= 0`) hoặc văn bản vượt quá số ký tự còn lại,
- *   hệ thống **tự động nhảy quảng cáo** (AdMob Rewarded / Interstitial + Fullscreen Sponsor Ad dự phòng)
- *   và cấp lại đầy **500 ký tự** sau khi quảng cáo kết thúc.
+ * Quản lý giới hạn tối đa 1000 ký tự mỗi lần chuyển giọng đọc &
+ * Quảng cáo theo lượt xuất file (MP3 / MP4) + Banner quảng cáo tự động:
+ * - Cho phép dùng toàn bộ 9 giọng đọc (tối đa 1000 ký tự / lần tạo).
+ * - Khi người dùng bấm Xuất File (MP3 hoặc MP4), hệ thống tự động hiển thị quảng cáo
+ *   (AdMob Interstitial / Rewarded Ad hoặc màn hình quảng cáo đếm ngược 5 giây),
+ *   chuyển quảng cáo xong mới tiến hành xuất file.
  */
-class AdMonetizationManager(
-    private val context: Context,
-    val config: MonetizationConfig = MonetizationConfig()
-) {
-    companion object {
-        const val MAX_CHARACTER_QUOTA = 500
-        private const val KEY_REMAINING_CHARS = "remaining_char_quota_v2"
-        private const val KEY_TOTAL_ADS_WATCHED = "total_ads_watched"
-    }
+class AdMonetizationManager(context: Context) {
 
-    private val prefs = context.getSharedPreferences("lkhk_ad_quota_prefs", Context.MODE_PRIVATE)
+    private val appContext = context.applicationContext
+    private val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    companion object {
+        private const val TAG = "AdMonetization"
+        private const val PREFS_NAME = "lkhk_tts_quota_prefs"
+        private const val KEY_EXPORT_COUNT = "export_count_total"
+
+        // Tối đa 1000 ký tự cho mỗi lần nhập văn bản chuyển thành giọng đọc
+        const val MAX_CHARACTER_QUOTA = 1000
+
+        // AdMob Unit IDs (Test IDs chuẩn của Google AdMob cho Interstitial, Rewarded & Banner)
+        const val ADMOB_BANNER_UNIT_ID = "ca-app-pub-3940256099942544/6300978111"
+        private const val ADMOB_INTERSTITIAL_UNIT_ID = "ca-app-pub-3940256099942544/1033173712"
+        private const val ADMOB_REWARDED_UNIT_ID = "ca-app-pub-3940256099942544/5224354917"
+    }
 
     private var rewardedAd: RewardedAd? = null
     private var interstitialAd: InterstitialAd? = null
 
+    private val _isAdLoaded = MutableStateFlow(false)
+    val isAdLoaded: StateFlow<Boolean> = _isAdLoaded.asStateFlow()
+
+    private val _exportCount = MutableStateFlow(loadSavedExportCount())
+    val exportCount: StateFlow<Int> = _exportCount.asStateFlow()
+
     init {
-        if (!prefs.contains(KEY_REMAINING_CHARS)) {
-            prefs.edit().putInt(KEY_REMAINING_CHARS, MAX_CHARACTER_QUOTA).apply()
-        }
-        runCatching {
-            MobileAds.initialize(context) {
-                preloadRewardedAd()
-                preloadInterstitialAd()
+        try {
+            MobileAds.initialize(appContext) {
+                preloadAds()
             }
-            preloadRewardedAd()
-            preloadInterstitialAd()
+        } catch (e: Exception) {
+            Log.w(TAG, "MobileAds init fallback: ${e.message}")
         }
     }
 
-    fun isInternetAvailable(): Boolean {
-        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-            ?: return false
-        val network = cm.activeNetwork ?: return false
-        val capabilities = cm.getNetworkCapabilities(network) ?: return false
-        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    private fun loadSavedExportCount(): Int {
+        return prefs.getInt(KEY_EXPORT_COUNT, 0).coerceAtLeast(0)
     }
 
-    /**
-     * Số ký tự miễn phí còn lại trong chu kỳ 500 ký tự hiện tại (`0..500`).
-     */
-    fun getRemainingCharacters(): Int {
-        return prefs.getInt(KEY_REMAINING_CHARS, MAX_CHARACTER_QUOTA)
-            .coerceIn(0, MAX_CHARACTER_QUOTA)
+    fun recordExportSuccess() {
+        val updated = _exportCount.value + 1
+        _exportCount.value = updated
+        prefs.edit().putInt(KEY_EXPORT_COUNT, updated).apply()
     }
 
-    /**
-     * Trừ số ký tự vừa chuyển thành Voice. Trả về số ký tự còn lại (`0..500`).
-     */
-    fun consumeCharacters(usedCount: Int): Int {
-        val current = getRemainingCharacters()
-        val next = (current - usedCount.coerceAtLeast(0)).coerceIn(0, MAX_CHARACTER_QUOTA)
-        prefs.edit().putInt(KEY_REMAINING_CHARS, next).apply()
-        return next
+    fun preloadAds() {
+        loadInterstitialAd()
+        loadRewardedAd()
     }
 
-    /**
-     * Khôi phục đầy 500 ký tự sau khi quảng cáo hoàn tất.
-     */
-    fun refillFullCharacterQuota(): Int {
-        prefs.edit().putInt(KEY_REMAINING_CHARS, MAX_CHARACTER_QUOTA).apply()
-        incrementTotalAdsWatched()
-        return MAX_CHARACTER_QUOTA
-    }
-
-    // Giữ tương thích cho các lời gọi cũ từ VoiceLibraryRepository (tất cả giọng đều mở sẵn)
-    fun isVoiceUnlocked(@Suppress("UNUSED_PARAMETER") voiceId: String, @Suppress("UNUSED_PARAMETER") isBuiltIn: Boolean = true): Boolean = true
-    fun markVoiceUnlocked(@Suppress("UNUSED_PARAMETER") voiceId: String, @Suppress("UNUSED_PARAMETER") unlocked: Boolean = true) {}
-    fun getRemainingUses(@Suppress("UNUSED_PARAMETER") voiceId: String, @Suppress("UNUSED_PARAMETER") isBuiltIn: Boolean): Int = 999
-    fun addRewardedUses(@Suppress("UNUSED_PARAMETER") voiceId: String, @Suppress("UNUSED_PARAMETER") bonusUses: Int = 999): Int = 999
-
-    fun getTotalAdsWatchedByUser(): Int = prefs.getInt(KEY_TOTAL_ADS_WATCHED, 0)
-
-    private fun incrementTotalAdsWatched() {
-        val total = getTotalAdsWatchedByUser() + 1
-        prefs.edit().putInt(KEY_TOTAL_ADS_WATCHED, total).apply()
-    }
-
-    fun preloadRewardedAd() {
-        runCatching {
-            val adRequest = AdRequest.Builder().build()
-            RewardedAd.load(
-                context,
-                config.admobRewardedUnitId,
-                adRequest,
-                object : RewardedAdLoadCallback() {
-                    override fun onAdLoaded(ad: RewardedAd) {
-                        rewardedAd = ad
-                    }
-
-                    override fun onAdFailedToLoad(error: LoadAdError) {
-                        rewardedAd = null
-                    }
+    private fun loadInterstitialAd() {
+        val adRequest = AdRequest.Builder().build()
+        InterstitialAd.load(
+            appContext,
+            ADMOB_INTERSTITIAL_UNIT_ID,
+            adRequest,
+            object : InterstitialAdLoadCallback() {
+                override fun onAdFailedToLoad(adError: LoadAdError) {
+                    interstitialAd = null
+                    updateAdLoadedFlag()
                 }
-            )
-        }
+
+                override fun onAdLoaded(ad: InterstitialAd) {
+                    interstitialAd = ad
+                    updateAdLoadedFlag()
+                }
+            }
+        )
     }
 
-    fun preloadInterstitialAd() {
-        runCatching {
-            val adRequest = AdRequest.Builder().build()
-            InterstitialAd.load(
-                context,
-                config.admobInterstitialUnitId,
-                adRequest,
-                object : InterstitialAdLoadCallback() {
-                    override fun onAdLoaded(ad: InterstitialAd) {
-                        interstitialAd = ad
-                    }
-
-                    override fun onAdFailedToLoad(error: LoadAdError) {
-                        interstitialAd = null
-                    }
+    private fun loadRewardedAd() {
+        val adRequest = AdRequest.Builder().build()
+        RewardedAd.load(
+            appContext,
+            ADMOB_REWARDED_UNIT_ID,
+            adRequest,
+            object : RewardedAdLoadCallback() {
+                override fun onAdFailedToLoad(adError: LoadAdError) {
+                    rewardedAd = null
+                    updateAdLoadedFlag()
                 }
-            )
-        }
+
+                override fun onAdLoaded(ad: RewardedAd) {
+                    rewardedAd = ad
+                    updateAdLoadedFlag()
+                }
+            }
+        )
+    }
+
+    private fun updateAdLoadedFlag() {
+        _isAdLoaded.value = (interstitialAd != null || rewardedAd != null)
     }
 
     /**
-     * Tự động hiển thị Quảng cáo ngay khi hết 500 ký tự:
-     * 1. Ưu tiên AdMob Rewarded Video Ad.
-     * 2. Nếu Rewarded chưa sẵn sàng, hiển thị AdMob Interstitial Ad.
-     * 3. Nếu thiết bị chưa nạp kịp AdMob (máy ảo / mất mạng tạm / no-fill), tự động bật Fullscreen Ad Overlay đếm ngược 5 giây.
+     * Tự động nhảy quảng cáo khi người dùng bấm Xuất File (MP3 hoặc MP4).
+     * Sau khi xem xong quảng cáo mới gọi [onAdCompleted] để tiến hành xuất file.
      */
-    fun triggerAutoAdForQuotaRefill(
+    fun triggerAdBeforeExport(
         activity: Activity?,
-        onQuotaRefilled: (newQuota: Int) -> Unit,
+        onAdCompleted: () -> Unit,
         onShowFallbackAdOverlay: () -> Unit
     ) {
-        val rAd = rewardedAd
-        if (activity != null && rAd != null) {
-            var earnedReward = false
-            rAd.fullScreenContentCallback = object : FullScreenContentCallback() {
-                override fun onAdDismissedFullScreenContent() {
-                    rewardedAd = null
-                    preloadRewardedAd()
-                    if (earnedReward) {
-                        onQuotaRefilled(refillFullCharacterQuota())
-                    }
-                }
-
-                override fun onAdFailedToShowFullScreenContent(adError: AdError) {
-                    rewardedAd = null
-                    preloadRewardedAd()
-                    onShowFallbackAdOverlay()
-                }
-            }
-            rAd.show(activity) {
-                earnedReward = true
-            }
-            return
-        }
-
-        val iAd = interstitialAd
-        if (activity != null && iAd != null) {
-            iAd.fullScreenContentCallback = object : FullScreenContentCallback() {
+        val currentInterstitial = interstitialAd
+        if (activity != null && currentInterstitial != null) {
+            currentInterstitial.fullScreenContentCallback = object : FullScreenContentCallback() {
                 override fun onAdDismissedFullScreenContent() {
                     interstitialAd = null
-                    preloadInterstitialAd()
-                    onQuotaRefilled(refillFullCharacterQuota())
+                    preloadAds()
+                    onAdCompleted()
                 }
 
                 override fun onAdFailedToShowFullScreenContent(adError: AdError) {
                     interstitialAd = null
-                    preloadInterstitialAd()
+                    preloadAds()
                     onShowFallbackAdOverlay()
                 }
             }
-            iAd.show(activity)
+            currentInterstitial.show(activity)
             return
         }
 
-        preloadRewardedAd()
-        preloadInterstitialAd()
+        val currentRewarded = rewardedAd
+        if (activity != null && currentRewarded != null) {
+            currentRewarded.fullScreenContentCallback = object : FullScreenContentCallback() {
+                override fun onAdDismissedFullScreenContent() {
+                    rewardedAd = null
+                    preloadAds()
+                    onAdCompleted()
+                }
+
+                override fun onAdFailedToShowFullScreenContent(adError: AdError) {
+                    rewardedAd = null
+                    preloadAds()
+                    onShowFallbackAdOverlay()
+                }
+            }
+            currentRewarded.show(activity) { _ ->
+                // Người dùng đã xem quảng cáo; chờ đóng quảng cáo hoặc xử lý tại onAdDismissedFullScreenContent
+            }
+            return
+        }
+
+        // Nếu AdMob đang nạp hoặc offline -> bật màn hình quảng cáo 5 giây trước khi xuất file
+        preloadAds()
         onShowFallbackAdOverlay()
     }
 }

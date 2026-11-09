@@ -5,12 +5,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
@@ -21,7 +21,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -37,160 +40,170 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import vn.langkinhhukhong.tts.model.CanvasImageOverlayItem
 import vn.langkinhhukhong.tts.model.CanvasTextOverlayItem
+import vn.langkinhhukhong.tts.model.SecondaryMp3Clip
 import vn.langkinhhukhong.tts.model.ShortVideoTrack
 import vn.langkinhhukhong.tts.model.VoiceSubtitleClip
+import kotlin.math.max
 import kotlin.math.roundToInt
-import kotlin.math.sin
 
 /**
- * Thanh Timeline dạng Part chuẩn CapCut (Gọn gàng, không chiếm diện tích Khu View 9:16):
- * - Tầng 1: Thước thời gian (chạm/kéo để di chuyển vạch Playhead).
- * - Tầng 2: Track Video MP4 9:16 (Bật/Tắt tiếng gốc MP4 + Cắt ngắn đầu/đuôi Video).
- * - Tầng 3: Track Voice + Sub phụ đề (Cắt thành nhiều đoạn part & kéo thả khớp với Video tùy ý).
- * - Tầng 4: Track Chữ (Text) & Icon/Logo PNG.
+ * Multi-track Timeline kiểu CapCut rút gọn & trực quan:
+ * - Đã loại bỏ nút "Cắt đầu" / "Cắt đuôi" trên thanh Video.
+ * - Mọi đối tượng (Video MP4, Voice+Sub, Tiêu đề, Sticker) đều có thể chạm để chọn (viền vàng),
+ *   kéo thả vị trí tùy ý, đưa Playhead vào vị trí bất kỳ và bấm nút "Cắt" dùng chung ở dưới để chia đoạn.
  */
 @Composable
 fun MultiTrackTimeline(
+    totalTimelineMs: Long,
+    playheadMs: Long,
     videoTrack: ShortVideoTrack,
     voiceClips: List<VoiceSubtitleClip>,
+    secondaryMp3Clips: List<SecondaryMp3Clip>,
     textOverlays: List<CanvasTextOverlayItem>,
     imageOverlays: List<CanvasImageOverlayItem>,
-    totalDurationMs: Long,
-    playheadMs: Long,
     selectedClipId: String?,
-    pixelsPerSecond: Dp = 54.dp,
-    onSeek: (Long) -> Unit,
+    pixelsPerSecond: Dp = 68.dp,
+    onSeekPlayhead: (Long) -> Unit,
     onSelectClip: (String?) -> Unit,
-    onToggleMuteVideo: () -> Unit,
-    onTrimVideoStartAtPlayhead: () -> Unit,
-    onTrimVideoEndAtPlayhead: () -> Unit,
-    onResetVideoTrim: () -> Unit,
+    onDragVideoSegment: (segmentId: String, deltaMs: Long) -> Unit,
     onDragVoiceClip: (clipId: String, deltaMs: Long) -> Unit,
-    onDragTextOverlay: (overlayId: String, deltaMs: Long) -> Unit,
-    onDragImageOverlay: (overlayId: String, deltaMs: Long) -> Unit,
+    onDragSecondaryMp3Clip: (clipId: String, deltaMs: Long) -> Unit,
+    onDragTextOverlayTime: (overlayId: String, deltaMs: Long) -> Unit,
+    onDragImageOverlayTime: (overlayId: String, deltaMs: Long) -> Unit,
+    onToggleMuteVideoAudio: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val scrollState = rememberScrollState()
     val density = LocalDensity.current
     val pxPerSec = with(density) { pixelsPerSecond.toPx() }
     val pxPerMs = pxPerSec / 1000f
 
-    val totalSeconds = (totalDurationMs / 1000f).coerceAtLeast(10f)
-    val timelineWidthDp = pixelsPerSecond * (totalSeconds + 4f)
-    val scrollState = rememberScrollState()
-
-    val currentOnSeek by rememberUpdatedState(onSeek)
+    val safeTotalMs = max(totalTimelineMs, 15_000L)
+    val timelineWidthDp = with(density) { ((safeTotalMs * pxPerMs) + 220f).toDp() }
+    val currentOnSeekPlayhead by rememberUpdatedState(onSeekPlayhead)
 
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .background(Color(0xFF10131C))
-            .horizontalScroll(scrollState)
-            .padding(vertical = 5.dp, horizontal = 12.dp)
+            .background(Color(0xFF101218))
     ) {
-        Column(
-            modifier = Modifier.width(timelineWidthDp),
-            verticalArrangement = Arrangement.spacedBy(5.dp)
-        ) {
-            // 1. THƯỚC ĐO THỜI GIAN (20dp)
-            TimeRulerBar(
-                totalDurationMs = totalDurationMs,
-                pxPerMs = pxPerMs,
-                timelineWidthDp = timelineWidthDp,
-                onSeek = currentOnSeek
-            )
-
-            // 2. TRACK VIDEO 9:16 (36dp)
-            VideoTrackRow(
-                videoTrack = videoTrack,
-                pxPerMs = pxPerMs,
-                onToggleMuteVideo = onToggleMuteVideo,
-                onTrimStart = onTrimVideoStartAtPlayhead,
-                onTrimEnd = onTrimVideoEndAtPlayhead,
-                onResetTrim = onResetVideoTrim
-            )
-
-            // 3. TRACK VOICE AI + SUB PHỤ ĐỀ (54dp)
-            CompoundVoiceSubtitleTrackRow(
-                voiceClips = voiceClips,
-                selectedClipId = selectedClipId,
-                pxPerMs = pxPerMs,
-                timelineWidthDp = timelineWidthDp,
-                onSelectClip = onSelectClip,
-                onDragVoiceClip = onDragVoiceClip
-            )
-
-            // 4. TRACK CHỮ (TEXT) & LOGO PNG (34dp)
-            VisualOverlaysTrackRow(
-                textOverlays = textOverlays,
-                imageOverlays = imageOverlays,
-                selectedClipId = selectedClipId,
-                pxPerMs = pxPerMs,
-                timelineWidthDp = timelineWidthDp,
-                onSelectClip = onSelectClip,
-                onDragTextOverlay = onDragTextOverlay,
-                onDragImageOverlay = onDragImageOverlay
-            )
-        }
-
-        // VẠCH ĐỎ PLAYHEAD
-        val playheadOffsetPx = (playheadMs * pxPerMs).roundToInt()
-        Box(
+        Row(
             modifier = Modifier
-                .offset { IntOffset(x = playheadOffsetPx, y = 0) }
-                .width(2.dp)
-                .height(158.dp)
-                .background(Color(0xFFFF3B5C))
-        )
+                .fillMaxWidth()
+                .horizontalScroll(scrollState)
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(timelineWidthDp)
+                    .padding(vertical = 4.dp)
+            ) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    // 1. Thước thời gian (chạm hoặc kéo để di chuyển kim đỏ Playhead tới vị trí muốn Cắt)
+                    TimeRulerHeader(
+                        totalMs = safeTotalMs,
+                        pxPerMs = pxPerMs,
+                        onSeek = { ms -> currentOnSeekPlayhead(ms) }
+                    )
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    // 2. Track Video MP4 (9:16): Chọn vào đoạn Video và bấm nút "Cắt" ở thanh dưới để chia đoạn
+                    VideoTrackRow(
+                        videoTrack = videoTrack,
+                        selectedClipId = selectedClipId,
+                        pxPerMs = pxPerMs,
+                        onSelectClip = onSelectClip,
+                        onDragVideoSegment = onDragVideoSegment,
+                        onToggleMute = onToggleMuteVideoAudio
+                    )
+
+                    Spacer(modifier = Modifier.height(5.dp))
+
+                    // 3. Track Voice AI + Phụ đề đồng bộ: Chọn vào đoạn Voice và bấm "Cắt" hoặc kéo thả vị trí
+                    VoiceAndSubtitleTrackRow(
+                        voiceClips = voiceClips,
+                        selectedClipId = selectedClipId,
+                        pxPerMs = pxPerMs,
+                        onSelectClip = onSelectClip,
+                        onDragClip = onDragVoiceClip
+                    )
+
+                    Spacer(modifier = Modifier.height(5.dp))
+
+                    // 4. Track Tiêu đề & Sticker: Chọn vào đối tượng và bấm "Cắt" hoặc kéo thả
+                    VisualOverlaysTrackRow(
+                        textOverlays = textOverlays,
+                        imageOverlays = imageOverlays,
+                        selectedClipId = selectedClipId,
+                        pxPerMs = pxPerMs,
+                        onSelectClip = onSelectClip,
+                        onDragTextOverlay = onDragTextOverlayTime,
+                        onDragImageOverlay = onDragImageOverlayTime
+                    )
+                }
+
+                // Đường kim đỏ Playhead
+                val playheadX = (playheadMs * pxPerMs).roundToInt()
+                Box(
+                    modifier = Modifier
+                        .offset { IntOffset(playheadX, 0) }
+                        .width(2.dp)
+                        .height(176.dp)
+                        .background(Color(0xFFFF3B30))
+                )
+            }
+        }
     }
 }
 
 @Composable
-private fun TimeRulerBar(
-    totalDurationMs: Long,
+private fun TimeRulerHeader(
+    totalMs: Long,
     pxPerMs: Float,
-    timelineWidthDp: Dp,
     onSeek: (Long) -> Unit
 ) {
+    val currentOnSeek by rememberUpdatedState(onSeek)
+    val totalSec = (totalMs / 1000L).toInt()
     Box(
         modifier = Modifier
-            .width(timelineWidthDp)
-            .height(20.dp)
-            .background(Color(0xFF181C28), RoundedCornerShape(4.dp))
-            .pointerInput(totalDurationMs, pxPerMs) {
-                detectTapGestures { offset ->
-                    val targetMs = (offset.x / pxPerMs).toLong().coerceIn(0L, totalDurationMs)
-                    onSeek(targetMs)
-                }
+            .fillMaxWidth()
+            .height(24.dp)
+            .background(Color(0xFF171A23))
+            .pointerInput(totalMs, pxPerMs) {
+                detectHorizontalDragGestures(
+                    onDragStart = { offset ->
+                        val ms = (offset.x / pxPerMs).toLong().coerceIn(0L, totalMs)
+                        currentOnSeek(ms)
+                    },
+                    onHorizontalDrag = { change, _ ->
+                        change.consume()
+                        val ms = (change.position.x / pxPerMs).toLong().coerceIn(0L, totalMs)
+                        currentOnSeek(ms)
+                    }
+                )
             }
-            .pointerInput(totalDurationMs, pxPerMs) {
-                detectHorizontalDragGestures { change, _ ->
-                    change.consume()
-                    val targetMs = (change.position.x / pxPerMs).toLong().coerceIn(0L, totalDurationMs)
-                    onSeek(targetMs)
-                }
-            }
+            .clickable { }
     ) {
-        val totalSec = (totalDurationMs / 1000L).toInt()
-        Canvas(modifier = Modifier.matchParentSize()) {
+        Canvas(modifier = Modifier.fillMaxWidth().height(24.dp)) {
             for (sec in 0..totalSec) {
                 val x = sec * 1000f * pxPerMs
                 val isMajor = sec % 5 == 0
                 drawLine(
-                    color = if (isMajor) Color(0xFF9EA6B8) else Color(0xFF454B5E),
-                    start = Offset(x, size.height - if (isMajor) 9f else 4f),
-                    end = Offset(x, size.height),
+                    color = if (isMajor) Color(0xFF9AA4B8) else Color(0xFF3E4452),
+                    start = Offset(x, if (isMajor) 4f else 12f),
+                    end = Offset(x, 24f),
                     strokeWidth = if (isMajor) 2f else 1f
                 )
             }
         }
-        val density = LocalDensity.current
         for (sec in 0..totalSec step 5) {
-            val xDp = with(density) { (sec * 1000f * pxPerMs).toDp() }
+            val offsetX = (sec * 1000f * pxPerMs).roundToInt()
             Text(
-                text = String.format("%02d:%02d", sec / 60, sec % 60),
-                color = Color(0xFFB5BDCE),
-                fontSize = 9.sp,
-                modifier = Modifier.offset(x = xDp + 2.dp, y = 1.dp)
+                text = "%02d:%02d".format(sec / 60, sec % 60),
+                color = Color(0xFF9AA4B8),
+                fontSize = 10.sp,
+                modifier = Modifier
+                    .offset { IntOffset(offsetX + 4, 2) }
             )
         }
     }
@@ -199,217 +212,207 @@ private fun TimeRulerBar(
 @Composable
 private fun VideoTrackRow(
     videoTrack: ShortVideoTrack,
+    selectedClipId: String?,
     pxPerMs: Float,
-    onToggleMuteVideo: () -> Unit,
-    onTrimStart: () -> Unit,
-    onTrimEnd: () -> Unit,
-    onResetTrim: () -> Unit
+    onSelectClip: (String?) -> Unit,
+    onDragVideoSegment: (String, Long) -> Unit,
+    onToggleMute: () -> Unit
 ) {
-    val density = LocalDensity.current
-    val widthDp = with(density) { (videoTrack.effectiveDurationMs * pxPerMs).toDp() }
+    val segments = videoTrack.segments
+    val speed = videoTrack.speedMultiplier
 
     Box(
         modifier = Modifier
-            .width(widthDp.coerceAtLeast(260.dp))
-            .height(36.dp)
-            .clip(RoundedCornerShape(6.dp))
-            .background(Color(0xFF213654))
-            .border(1.dp, Color(0xFF4E7AC7), RoundedCornerShape(6.dp))
-            .padding(horizontal = 6.dp),
-        contentAlignment = Alignment.CenterStart
+            .fillMaxWidth()
+            .height(40.dp)
+            .background(Color(0xFF141822))
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
+        if (segments.isEmpty()) {
+            val fallbackWidthPx = max(160f, videoTrack.trimmedDurationMs * pxPerMs).roundToInt()
             Box(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(if (videoTrack.muteOriginalAudio) Color(0xFFD32F2F) else Color(0xFF00C853))
-                    .clickable { onToggleMuteVideo() }
-                    .padding(horizontal = 6.dp, vertical = 3.dp)
+                    .width(with(LocalDensity.current) { fallbackWidthPx.toDp() })
+                    .fillMaxHeight()
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color(0xFF23324A))
+                    .border(1.dp, Color(0xFF3D5A80), RoundedCornerShape(6.dp))
+                    .padding(horizontal = 8.dp),
+                contentAlignment = Alignment.CenterStart
             ) {
                 Text(
-                    text = if (videoTrack.muteOriginalAudio) "🔇 Tắt tiếng MP4" else "🔊 Tiếng MP4",
-                    color = Color.White,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold
+                    text = "🎬 ${videoTrack.displayName} (Bấm 'Chọn MP4 9:16' để nạp video)",
+                    color = Color(0xFFB0BEC5),
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
+        } else {
+            segments.forEachIndexed { index, seg ->
+                val isSelected = seg.id == selectedClipId
+                val startPx = (seg.timelineStartMs * pxPerMs).roundToInt()
+                val segDurationMs = seg.durationAtSpeedMs(speed)
+                val widthPx = max(72f, segDurationMs * pxPerMs).roundToInt()
+                val currentOnDrag by rememberUpdatedState(onDragVideoSegment)
+                var dragResidualMs by remember(seg.id) { mutableFloatStateOf(0f) }
 
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(Color(0xFF152238))
-                    .border(1.dp, Color(0xFF64B5F6), RoundedCornerShape(4.dp))
-                    .clickable { onTrimStart() }
-                    .padding(horizontal = 6.dp, vertical = 3.dp)
-            ) {
-                Text(
-                    text = "✂ Cắt đầu",
-                    color = Color(0xFF80D8FF),
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
-
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(Color(0xFF152238))
-                    .border(1.dp, Color(0xFF64B5F6), RoundedCornerShape(4.dp))
-                    .clickable { onTrimEnd() }
-                    .padding(horizontal = 6.dp, vertical = 3.dp)
-            ) {
-                Text(
-                    text = "Cắt đuôi ✂",
-                    color = Color(0xFF80D8FF),
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
-
-            if (videoTrack.isTrimmed) {
                 Box(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(4.dp))
-                        .background(Color(0xFFFFB300))
-                        .clickable { onResetTrim() }
-                        .padding(horizontal = 6.dp, vertical = 3.dp)
+                        .offset { IntOffset(startPx, 0) }
+                        .width(with(LocalDensity.current) { widthPx.toDp() })
+                        .fillMaxHeight()
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(if (isSelected) Color(0xFF2C456B) else Color(0xFF23324A))
+                        .border(
+                            width = if (isSelected) 2.dp else 1.dp,
+                            color = if (isSelected) Color(0xFFFFD600) else Color(0xFF3D5A80),
+                            shape = RoundedCornerShape(6.dp)
+                        )
+                        .clickable { onSelectClip(seg.id) }
+                        .pointerInput(seg.id, pxPerMs) {
+                            detectHorizontalDragGestures(
+                                onDragStart = {
+                                    dragResidualMs = 0f
+                                    onSelectClip(seg.id)
+                                },
+                                onHorizontalDrag = { change, dragAmountPx ->
+                                    change.consume()
+                                    val totalDeltaMs = (dragAmountPx / pxPerMs) + dragResidualMs
+                                    val stepMs = totalDeltaMs.toLong()
+                                    dragResidualMs = totalDeltaMs - stepMs
+                                    if (stepMs != 0L) {
+                                        currentOnDrag(seg.id, stepMs)
+                                    }
+                                }
+                            )
+                        }
+                        .padding(horizontal = 6.dp),
+                    contentAlignment = Alignment.CenterStart
                 ) {
-                    Text(
-                        text = "↺ Gốc",
-                        color = Color.Black,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (index == 0) {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(
+                                        if (videoTrack.isOriginalAudioMuted) Color(0xFFD32F2F) else Color(0xFF2E7D32)
+                                    )
+                                    .clickable { onToggleMute() }
+                                    .padding(horizontal = 6.dp, vertical = 3.dp)
+                            ) {
+                                Text(
+                                    text = if (videoTrack.isOriginalAudioMuted) "🔇 Tắt tiếng MP4" else "🔊 Bật tiếng MP4",
+                                    color = Color.White,
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(6.dp))
+                        }
+
+                        Text(
+                            text = "🎬 ${seg.label} (${formatSec(segDurationMs)})",
+                            color = if (isSelected) Color(0xFFFFF59D) else Color.White,
+                            fontSize = 11.sp,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
             }
-
-            Text(
-                text = "🎬 ${videoTrack.displayName} (${videoTrack.effectiveDurationMs / 1000}s)",
-                color = Color.White,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
         }
     }
 }
 
 @Composable
-private fun CompoundVoiceSubtitleTrackRow(
+private fun VoiceAndSubtitleTrackRow(
     voiceClips: List<VoiceSubtitleClip>,
     selectedClipId: String?,
     pxPerMs: Float,
-    timelineWidthDp: Dp,
     onSelectClip: (String?) -> Unit,
-    onDragVoiceClip: (clipId: String, deltaMs: Long) -> Unit
+    onDragClip: (String, Long) -> Unit
 ) {
-    val density = LocalDensity.current
-
     Box(
         modifier = Modifier
-            .width(timelineWidthDp)
-            .height(54.dp)
-            .background(Color(0xFF161A24), RoundedCornerShape(6.dp))
+            .fillMaxWidth()
+            .height(52.dp)
+            .background(Color(0xFF151922))
     ) {
         if (voiceClips.isEmpty()) {
             Text(
-                text = "🎙️ Track Voice + Sub (Bấm 'Tạo Voice+Sub' bên dưới -> Cắt chia đoạn & Kéo thả khớp với Video)",
-                color = Color(0xFF788296),
-                fontSize = 10.sp,
+                text = "🎙️ Track Voice AI + Phụ đề (Bấm 'Tạo Voice+Sub' bên dưới để thêm, chọn đối tượng và bấm 'Cắt' để chia đoạn)",
+                color = Color(0xFF697386),
+                fontSize = 11.sp,
                 modifier = Modifier
                     .align(Alignment.CenterStart)
-                    .padding(start = 10.dp)
+                    .padding(start = 12.dp)
             )
         }
 
         voiceClips.forEach { clip ->
-            val offsetX = (clip.timelineStartMs * pxPerMs).roundToInt()
-            val clipWidthDp = with(density) { (clip.durationMs * pxPerMs).toDp().coerceAtLeast(48.dp) }
             val isSelected = clip.id == selectedClipId
-            val currentOnDrag by rememberUpdatedState(onDragVoiceClip)
+            val startPx = (clip.timelineStartMs * pxPerMs).roundToInt()
+            val widthPx = max(48f, clip.trimmedDurationMs * pxPerMs).roundToInt()
+            val currentOnDragClip by rememberUpdatedState(onDragClip)
+            var dragResidualMs by remember(clip.id) { mutableFloatStateOf(0f) }
 
-            val primaryColor = Color(clip.voiceProfile.colorHex)
-            val borderColor = if (isSelected) Color(0xFFFFD600) else Color(0xFF4E9F3D)
-
-            Column(
+            Box(
                 modifier = Modifier
-                    .offset { IntOffset(x = offsetX, y = 2) }
-                    .width(clipWidthDp)
-                    .height(50.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(primaryColor)
+                    .offset { IntOffset(startPx, 0) }
+                    .width(with(LocalDensity.current) { widthPx.toDp() })
+                    .fillMaxHeight()
+                    .clip(RoundedCornerShape(7.dp))
+                    .background(if (isSelected) Color(0xFF2B4C3F) else Color(0xFF1E3A2F))
                     .border(
                         width = if (isSelected) 2.dp else 1.dp,
-                        color = borderColor,
-                        shape = RoundedCornerShape(6.dp)
+                        color = if (isSelected) Color(0xFFFFD600) else Color(0xFF4CAF50),
+                        shape = RoundedCornerShape(7.dp)
                     )
                     .clickable { onSelectClip(clip.id) }
                     .pointerInput(clip.id, pxPerMs) {
                         detectHorizontalDragGestures(
-                            onDragStart = { onSelectClip(clip.id) },
+                            onDragStart = {
+                                dragResidualMs = 0f
+                                onSelectClip(clip.id)
+                            },
                             onHorizontalDrag = { change, dragAmountPx ->
                                 change.consume()
-                                val deltaMs = (dragAmountPx / pxPerMs).toLong()
-                                if (deltaMs != 0L) {
-                                    currentOnDrag(clip.id, deltaMs)
+                                val totalDeltaMs = (dragAmountPx / pxPerMs) + dragResidualMs
+                                val stepMs = totalDeltaMs.toLong()
+                                dragResidualMs = totalDeltaMs - stepMs
+                                if (stepMs != 0L) {
+                                    currentOnDragClip(clip.id, stepMs)
                                 }
                             }
                         )
                     }
+                    .padding(horizontal = 6.dp, vertical = 3.dp)
             ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(21.dp)
-                        .background(Color(0xCC9A4800))
-                        .padding(horizontal = 5.dp),
-                    contentAlignment = Alignment.CenterStart
-                ) {
+                Column(modifier = Modifier.fillMaxWidth()) {
                     Text(
-                        text = "💬 ${clip.visibleSubText}",
+                        text = "💬 ${clip.subtitleText}",
                         color = Color(0xFFFFF59D),
-                        fontSize = 9.sp,
-                        fontWeight = FontWeight.Medium,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xFF3E2723), RoundedCornerShape(4.dp))
+                            .padding(horizontal = 4.dp, vertical = 1.dp)
                     )
-                }
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .padding(horizontal = 5.dp),
-                    contentAlignment = Alignment.CenterStart
-                ) {
-                    Canvas(modifier = Modifier.matchParentSize()) {
-                        val barCount = (size.width / 8f).toInt().coerceAtLeast(4)
-                        for (i in 0 until barCount) {
-                            val x = i * 8f + 4f
-                            val waveRatio = (sin((i + clip.trimStartMs / 100f) * 0.8) * 0.4 + 0.5).toFloat()
-                            val barHeight = size.height * waveRatio.coerceIn(0.2f, 0.85f)
-                            val top = (size.height - barHeight) / 2f
-                            drawLine(
-                                color = Color(0x55A7FFEB),
-                                start = Offset(x, top),
-                                end = Offset(x, top + barHeight),
-                                strokeWidth = 2.5f
-                            )
-                        }
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "🎙️ ${clip.voiceDisplayName} (${formatSec(clip.trimmedDurationMs)})",
+                            color = Color(0xFFA5D6A7),
+                            fontSize = 10.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
                     }
-
-                    Text(
-                        text = "🎙️ ${clip.voiceProfile.displayName} (${(clip.durationMs / 100f).roundToInt() / 10f}s)",
-                        color = Color.White,
-                        fontSize = 9.sp,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
                 }
             }
         }
@@ -422,57 +425,61 @@ private fun VisualOverlaysTrackRow(
     imageOverlays: List<CanvasImageOverlayItem>,
     selectedClipId: String?,
     pxPerMs: Float,
-    timelineWidthDp: Dp,
     onSelectClip: (String?) -> Unit,
-    onDragTextOverlay: (overlayId: String, deltaMs: Long) -> Unit,
-    onDragImageOverlay: (overlayId: String, deltaMs: Long) -> Unit
+    onDragTextOverlay: (String, Long) -> Unit,
+    onDragImageOverlay: (String, Long) -> Unit
 ) {
-    val density = LocalDensity.current
-
     Box(
         modifier = Modifier
-            .width(timelineWidthDp)
+            .fillMaxWidth()
             .height(34.dp)
-            .background(Color(0xFF181625), RoundedCornerShape(6.dp))
+            .background(Color(0xFF141720))
     ) {
         if (textOverlays.isEmpty() && imageOverlays.isEmpty()) {
             Text(
-                text = "🔤🖼️ Track Chữ (Text) & Logo PNG (Bấm '+Chữ' hoặc '+Logo PNG' để thêm & làm mờ)",
-                color = Color(0xFF7E7896),
-                fontSize = 10.sp,
+                text = "🔤🖼️ Track Tiêu đề & Sticker (Bấm 'Tiêu đề' hoặc 'Sticker' để thêm, chọn đối tượng và bấm 'Cắt' để chia đoạn)",
+                color = Color(0xFF697386),
+                fontSize = 11.sp,
                 modifier = Modifier
                     .align(Alignment.CenterStart)
-                    .padding(start = 10.dp)
+                    .padding(start = 12.dp)
             )
         }
 
         textOverlays.forEach { item ->
-            val offsetX = (item.timelineStartMs * pxPerMs).roundToInt()
-            val widthDp = with(density) { (item.durationMs * pxPerMs).toDp().coerceAtLeast(48.dp) }
             val isSelected = item.id == selectedClipId
-            val currentOnDrag by rememberUpdatedState(onDragTextOverlay)
+            val startPx = (item.startTimeMs * pxPerMs).roundToInt()
+            val durationMs = max(500L, item.endTimeMs - item.startTimeMs)
+            val widthPx = max(44f, durationMs * pxPerMs).roundToInt()
+            val currentOnDragText by rememberUpdatedState(onDragTextOverlay)
+            var dragResidualMs by remember(item.id) { mutableFloatStateOf(0f) }
 
             Box(
                 modifier = Modifier
-                    .offset { IntOffset(x = offsetX, y = 2) }
-                    .width(widthDp)
+                    .offset { IntOffset(startPx, 2) }
+                    .width(with(LocalDensity.current) { widthPx.toDp() })
                     .height(30.dp)
-                    .clip(RoundedCornerShape(5.dp))
-                    .background(Color(0xFF6A1B9A))
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color(0xFF4A2545))
                     .border(
                         width = if (isSelected) 2.dp else 1.dp,
                         color = if (isSelected) Color(0xFFFFD600) else Color(0xFFCE93D8),
-                        shape = RoundedCornerShape(5.dp)
+                        shape = RoundedCornerShape(6.dp)
                     )
                     .clickable { onSelectClip(item.id) }
                     .pointerInput(item.id, pxPerMs) {
                         detectHorizontalDragGestures(
-                            onDragStart = { onSelectClip(item.id) },
+                            onDragStart = {
+                                dragResidualMs = 0f
+                                onSelectClip(item.id)
+                            },
                             onHorizontalDrag = { change, dragAmountPx ->
                                 change.consume()
-                                val deltaMs = (dragAmountPx / pxPerMs).toLong()
-                                if (deltaMs != 0L) {
-                                    currentOnDrag(item.id, deltaMs)
+                                val totalDeltaMs = (dragAmountPx / pxPerMs) + dragResidualMs
+                                val stepMs = totalDeltaMs.toLong()
+                                dragResidualMs = totalDeltaMs - stepMs
+                                if (stepMs != 0L) {
+                                    currentOnDragText(item.id, stepMs)
                                 }
                             }
                         )
@@ -481,43 +488,49 @@ private fun VisualOverlaysTrackRow(
                 contentAlignment = Alignment.CenterStart
             ) {
                 Text(
-                    text = "🔤 \"${item.text}\" (${(item.opacity * 100).toInt()}%)",
+                    text = "🔤 Tiêu đề: ${item.text} (${formatSec(durationMs)})",
                     color = Color.White,
-                    fontSize = 9.sp,
-                    fontWeight = FontWeight.Bold,
+                    fontSize = 10.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
             }
         }
 
-        imageOverlays.forEach { img ->
-            val offsetX = (img.timelineStartMs * pxPerMs).roundToInt()
-            val widthDp = with(density) { (img.durationMs * pxPerMs).toDp().coerceAtLeast(52.dp) }
-            val isSelected = img.id == selectedClipId
-            val currentOnDrag by rememberUpdatedState(onDragImageOverlay)
+        imageOverlays.forEach { item ->
+            val isSelected = item.id == selectedClipId
+            val startPx = (item.startTimeMs * pxPerMs).roundToInt()
+            val durationMs = max(500L, item.endTimeMs - item.startTimeMs)
+            val widthPx = max(44f, durationMs * pxPerMs).roundToInt()
+            val currentOnDragImage by rememberUpdatedState(onDragImageOverlay)
+            var dragResidualMs by remember(item.id) { mutableFloatStateOf(0f) }
 
             Box(
                 modifier = Modifier
-                    .offset { IntOffset(x = offsetX, y = 2) }
-                    .width(widthDp)
+                    .offset { IntOffset(startPx, 2) }
+                    .width(with(LocalDensity.current) { widthPx.toDp() })
                     .height(30.dp)
-                    .clip(RoundedCornerShape(5.dp))
-                    .background(Color(0xFF00695C))
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color(0xFF3E2723))
                     .border(
                         width = if (isSelected) 2.dp else 1.dp,
-                        color = if (isSelected) Color(0xFFFFD600) else Color(0xFF80CBC4),
-                        shape = RoundedCornerShape(5.dp)
+                        color = if (isSelected) Color(0xFFFFD600) else Color(0xFFFFB74D),
+                        shape = RoundedCornerShape(6.dp)
                     )
-                    .clickable { onSelectClip(img.id) }
-                    .pointerInput(img.id, pxPerMs) {
+                    .clickable { onSelectClip(item.id) }
+                    .pointerInput(item.id, pxPerMs) {
                         detectHorizontalDragGestures(
-                            onDragStart = { onSelectClip(img.id) },
+                            onDragStart = {
+                                dragResidualMs = 0f
+                                onSelectClip(item.id)
+                            },
                             onHorizontalDrag = { change, dragAmountPx ->
                                 change.consume()
-                                val deltaMs = (dragAmountPx / pxPerMs).toLong()
-                                if (deltaMs != 0L) {
-                                    currentOnDrag(img.id, deltaMs)
+                                val totalDeltaMs = (dragAmountPx / pxPerMs) + dragResidualMs
+                                val stepMs = totalDeltaMs.toLong()
+                                dragResidualMs = totalDeltaMs - stepMs
+                                if (stepMs != 0L) {
+                                    currentOnDragImage(item.id, stepMs)
                                 }
                             }
                         )
@@ -526,14 +539,18 @@ private fun VisualOverlaysTrackRow(
                 contentAlignment = Alignment.CenterStart
             ) {
                 Text(
-                    text = "🖼️ ${img.name} (${(img.opacity * 100).toInt()}%)",
-                    color = Color(0xFFE0F2F1),
-                    fontSize = 9.sp,
-                    fontWeight = FontWeight.Bold,
+                    text = "🖼️ Sticker: ${item.label} (${formatSec(durationMs)})",
+                    color = Color(0xFFFFE082),
+                    fontSize = 10.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
             }
         }
     }
+}
+
+private fun formatSec(ms: Long): String {
+    val sec = ms / 1000.0
+    return "%.1fs".format(sec)
 }

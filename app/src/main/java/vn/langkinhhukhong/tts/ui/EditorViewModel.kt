@@ -2,1098 +2,879 @@ package vn.langkinhhukhong.tts.ui
 
 import android.app.Activity
 import android.app.Application
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Paint
-import android.graphics.RectF
-import android.media.AudioAttributes
 import android.media.MediaMetadataRetriever
-import android.media.MediaPlayer
 import android.net.Uri
-import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import vn.langkinhhukhong.tts.ads.AdMonetizationManager
 import vn.langkinhhukhong.tts.media.VideoExportManager
 import vn.langkinhhukhong.tts.model.CanvasImageOverlayItem
 import vn.langkinhhukhong.tts.model.CanvasTextOverlayItem
-import vn.langkinhhukhong.tts.model.EditorConstraints
-import vn.langkinhhukhong.tts.model.MonetizationConfig
-import vn.langkinhhukhong.tts.model.OfflineVoiceProfile
 import vn.langkinhhukhong.tts.model.SecondaryMp3Clip
 import vn.langkinhhukhong.tts.model.ShortVideoTrack
-import vn.langkinhhukhong.tts.model.SubtitleOverlayStyle
-import vn.langkinhhukhong.tts.model.TimelineSubtitleToken
+import vn.langkinhhukhong.tts.model.SubtitleCanvasConfig
+import vn.langkinhhukhong.tts.model.VideoSegmentClip
+import vn.langkinhhukhong.tts.model.VoiceModelCatalogItem
 import vn.langkinhhukhong.tts.model.VoiceSubtitleClip
 import vn.langkinhhukhong.tts.tts.SherpaOfflineTtsEngine
+import vn.langkinhhukhong.tts.tts.VoicePackManager
 import java.io.File
-import java.io.FileOutputStream
+import java.util.UUID
+import kotlin.math.max
+import kotlin.math.min
+
+enum class ExportFormat {
+    MP3,
+    MP4
+}
 
 data class EditorUiState(
-    val videoTrack: ShortVideoTrack = ShortVideoTrack(
-        videoUri = "",
-        displayName = "Chưa chọn Video 9:16",
-        originalDurationMs = 30_000L,
-        trimStartMs = 0L,
-        trimEndMs = 30_000L,
-        width = 1080,
-        height = 1920,
-        speedMultiplier = 1.0f,
-        muteOriginalAudio = false
-    ),
-    val monetizationConfig: MonetizationConfig = MonetizationConfig(),
-    val voiceCatalog: List<OfflineVoiceProfile> = OfflineVoiceProfile.DEFAULT_ONLINE_LIBRARY_CATALOG,
+    val videoTrack: ShortVideoTrack = ShortVideoTrack(),
     val voiceClips: List<VoiceSubtitleClip> = emptyList(),
     val secondaryMp3Clips: List<SecondaryMp3Clip> = emptyList(),
     val textOverlays: List<CanvasTextOverlayItem> = emptyList(),
     val imageOverlays: List<CanvasImageOverlayItem> = emptyList(),
-    val subtitleStyle: SubtitleOverlayStyle = SubtitleOverlayStyle(),
-    val selectedVoiceProfile: OfflineVoiceProfile = OfflineVoiceProfile.BUILT_IN_MALE_MINH_KHANG,
-    val remainingCharQuota: Int = AdMonetizationManager.MAX_CHARACTER_QUOTA,
-    val maxCharQuota: Int = AdMonetizationManager.MAX_CHARACTER_QUOTA,
-    val showFallbackQuotaAdDialog: Boolean = false,
-    val totalAdsWatched: Int = 0,
-    val ttsInputText: String = "Xin chào các bạn, hôm nay chúng ta cùng khám phá câu chuyện thú vị này nhé.",
-    val ttsSpeechRate: Float = 1.0f,
+    val subtitleConfig: SubtitleCanvasConfig = SubtitleCanvasConfig(),
     val playheadMs: Long = 0L,
     val isPlaying: Boolean = false,
     val selectedClipId: String? = null,
+    val selectedVoiceId: String = "vits-piper-vi_VN-lac_phi-medium",
+    val voiceCatalog: List<VoiceModelCatalogItem> = emptyList(),
+    val downloadedVoiceIds: Set<String> = emptySet(),
+    val downloadingVoiceId: String? = null,
+    val downloadProgressPercent: Int = 0,
+    val ttsSpeed: Float = 1.0f,
     val isSynthesizingTts: Boolean = false,
     val isExportingVideo: Boolean = false,
-    val statusMessage: String = "Sẵn sàng • Miễn phí tất cả 9 giọng đọc (Hạn mức 500 ký tự/lượt quảng cáo)"
+    val exportedMp4Path: String? = null,
+    val maxCharQuota: Int = AdMonetizationManager.MAX_CHARACTER_QUOTA,
+    val showExportFormatSheet: Boolean = false,
+    val showFallbackExportAdDialog: Boolean = false,
+    val pendingExportFormat: ExportFormat? = null,
+    val statusMessage: String = ""
 ) {
-    val installedVoices: List<OfflineVoiceProfile>
-        get() = voiceCatalog
-
-    /** Tổng thời lượng Timeline dựa trên Video (tối đa 3 phút) hoặc các đoạn Voice đã tạo */
     val totalTimelineDurationMs: Long
         get() {
+            val videoEnd = videoTrack.timelineEndMs
             val maxVoiceEnd = voiceClips.maxOfOrNull { it.timelineEndMs } ?: 0L
-            val baseDuration = if (videoTrack.videoUri.isNotBlank()) {
-                videoTrack.effectiveDurationMs
-            } else {
-                maxOf(30_000L, maxVoiceEnd + 3_000L)
-            }
-            return baseDuration.coerceIn(3_000L, EditorConstraints.MAX_VIDEO_DURATION_MS)
+            val maxMp3End = secondaryMp3Clips.maxOfOrNull { it.timelineEndMs } ?: 0L
+            val maxTextEnd = textOverlays.maxOfOrNull { it.endTimeMs } ?: 0L
+            val maxImgEnd = imageOverlays.maxOfOrNull { it.endTimeMs } ?: 0L
+            return maxOf(videoEnd, maxVoiceEnd, maxMp3End, maxTextEnd, maxImgEnd, 15_000L)
         }
 
-    val activeVoiceClipAtPlayhead: VoiceSubtitleClip?
-        get() = voiceClips.lastOrNull { playheadMs in it.timelineStartMs..it.timelineEndMs }
+    val activeSubtitleAtPlayhead: VoiceSubtitleClip?
+        get() = voiceClips.lastOrNull { clip ->
+            playheadMs >= clip.timelineStartMs && playheadMs <= clip.timelineEndMs
+        }
 
-    /**
-     * Hiển thị cụm phụ đề ngắn gọn (tối đa 7 từ quanh từ đang đọc) chuẩn CapCut để dễ nhìn và chỉnh cỡ chữ.
-     */
-    val currentSubtitleTokens: List<TimelineSubtitleToken>
+    val activeVideoSegmentAtPlayhead: VideoSegmentClip?
         get() {
-            val allTokens = activeVoiceClipAtPlayhead?.getMappedWords(playheadMs) ?: return emptyList()
-            if (allTokens.size <= 7) return allTokens
-            val chunks = allTokens.chunked(7)
-            return chunks.firstOrNull { chunk ->
-                chunk.any { it.isHighlighted } ||
-                    playheadMs in chunk.first().timelineStartMs..chunk.last().timelineEndMs
-            } ?: chunks.first()
+            val speed = videoTrack.speedMultiplier
+            return videoTrack.segments.lastOrNull { seg ->
+                playheadMs >= seg.timelineStartMs && playheadMs <= seg.timelineEndAtSpeedMs(speed)
+            }
         }
 
-    val visibleTextOverlaysAtPlayhead: List<CanvasTextOverlayItem>
-        get() = textOverlays.filter { it.isVisibleAt(playheadMs) }
-
-    val visibleImageOverlaysAtPlayhead: List<CanvasImageOverlayItem>
-        get() = imageOverlays.filter { it.isVisibleAt(playheadMs) }
+    val selectedVideoSegment: VideoSegmentClip?
+        get() = videoTrack.segments.find { it.id == selectedClipId }
 
     val selectedVoiceClip: VoiceSubtitleClip?
-        get() = voiceClips.firstOrNull { it.id == selectedClipId }
+        get() = voiceClips.find { it.id == selectedClipId }
+
+    val selectedSecondaryMp3Clip: SecondaryMp3Clip?
+        get() = secondaryMp3Clips.find { it.id == selectedClipId }
 
     val selectedTextOverlay: CanvasTextOverlayItem?
-        get() = textOverlays.firstOrNull { it.id == selectedClipId }
+        get() = textOverlays.find { it.id == selectedClipId }
 
     val selectedImageOverlay: CanvasImageOverlayItem?
-        get() = imageOverlays.firstOrNull { it.id == selectedClipId }
+        get() = imageOverlays.find { it.id == selectedClipId }
 }
 
 class EditorViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val ttsEngine = SherpaOfflineTtsEngine(application)
-    private val exportManager = VideoExportManager(application)
-    private val adManager = AdMonetizationManager(application)
+    private val voicePackManager = VoicePackManager(application)
+    private val ttsEngine = SherpaOfflineTtsEngine(application, voicePackManager)
+    val adManager = AdMonetizationManager(application)
+    private val videoExportManager = VideoExportManager(application)
 
     private val _uiState = MutableStateFlow(
         EditorUiState(
-            remainingCharQuota = adManager.getRemainingCharacters(),
-            totalAdsWatched = adManager.getTotalAdsWatchedByUser()
+            voiceCatalog = voicePackManager.getCatalog(),
+            downloadedVoiceIds = voicePackManager.getDownloadedVoiceIds(),
+            maxCharQuota = AdMonetizationManager.MAX_CHARACTER_QUOTA
         )
     )
     val uiState: StateFlow<EditorUiState> = _uiState.asStateFlow()
 
-    private var playbackJob: Job? = null
-    private var activeTtsMediaPlayer: MediaPlayer? = null
-    private var activeClipPlayingId: String? = null
-    private var pendingAutoRenderAfterAd: Boolean = false
-    private var pendingCompletionCallbackAfterAd: (() -> Unit)? = null
-    private var pendingPlayClipStartMsAfterAd: Long? = null
-
     // =========================================================================
-    // 1. VIDEO MP4 9:16 (<= 3 PHÚT): NẠP VIDEO, CẮT NGẮN VIDEO, TẮT/BẬT TIẾNG MP4
+    // 1. NẠP VIDEO MP4 (9:16, TỐI ĐA 3 PHÚT) & CHIA ĐOẠN VIDEO
     // =========================================================================
 
-    fun importShortVideo(uri: Uri) {
-        viewModelScope.launch {
-            runCatching {
-                val retriever = MediaMetadataRetriever()
-                retriever.setDataSource(getApplication(), uri)
-                val durationMs = retriever.extractMetadata(
-                    MediaMetadataRetriever.METADATA_KEY_DURATION
-                )?.toLongOrNull() ?: 30_000L
-                val width = retriever.extractMetadata(
-                    MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH
-                )?.toIntOrNull() ?: 1080
-                val height = retriever.extractMetadata(
-                    MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT
-                )?.toIntOrNull() ?: 1920
-                val rotation = retriever.extractMetadata(
-                    MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION
-                )?.toIntOrNull() ?: 0
-                retriever.release()
-
-                val actualW = if (rotation == 90 || rotation == 270) height else width
-                val actualH = if (rotation == 90 || rotation == 270) width else height
-
-                val clampedDuration = durationMs.coerceAtMost(EditorConstraints.MAX_VIDEO_DURATION_MS)
-                val warningSuffix = if (durationMs > EditorConstraints.MAX_VIDEO_DURATION_MS) {
-                    " (Giới hạn tối đa 3 phút)"
-                } else {
-                    ""
-                }
-
-                _uiState.update { state ->
-                    state.copy(
-                        videoTrack = ShortVideoTrack(
-                            videoUri = uri.toString(),
-                            displayName = uri.lastPathSegment?.substringAfterLast('/') ?: "Video_9x16.mp4",
-                            originalDurationMs = clampedDuration,
-                            trimStartMs = 0L,
-                            trimEndMs = clampedDuration,
-                            width = actualW,
-                            height = actualH,
-                            speedMultiplier = 1.0f,
-                            muteOriginalAudio = state.videoTrack.muteOriginalAudio
-                        ),
-                        playheadMs = 0L,
-                        statusMessage = "Đã nạp Video 9:16 (${clampedDuration / 1000}s)$warningSuffix"
-                    )
-                }
-            }.onFailure { err ->
-                _uiState.update {
-                    it.copy(statusMessage = "Không thể đọc video: ${err.message}")
-                }
-            }
-        }
-    }
-
-    fun toggleMuteOriginalVideo() {
-        _uiState.update { state ->
-            val nextMute = !state.videoTrack.muteOriginalAudio
-            state.copy(
-                videoTrack = state.videoTrack.copy(muteOriginalAudio = nextMute),
-                statusMessage = if (nextMute) {
-                    "🔇 Đã tắt tiếng gốc của Video MP4"
-                } else {
-                    "🔊 Đã bật tiếng gốc của Video MP4"
-                }
+    fun importShortVideoMp4(uri: Uri, displayName: String) {
+        val checkResult = videoExportManager.validateAndInspectShortVideo(uri, displayName)
+        checkResult.onSuccess { info ->
+            val initialSegment = VideoSegmentClip(
+                id = "vid_seg_${UUID.randomUUID().toString().take(6)}",
+                label = info.displayName,
+                timelineStartMs = 0L,
+                sourceStartMs = 0L,
+                sourceEndMs = info.durationMs
             )
-        }
-    }
-
-    fun trimVideoStartAtPlayhead() {
-        _uiState.update { state ->
-            val video = state.videoTrack
-            val cutSourceOffsetMs = (state.playheadMs * video.speedMultiplier).toLong()
-            val newTrimStart = (video.trimStartMs + cutSourceOffsetMs)
-                .coerceIn(0L, (video.trimEndMs - 1_000L).coerceAtLeast(0L))
-
-            if (newTrimStart == video.trimStartMs) {
-                return@update state.copy(
-                    statusMessage = "Di chuyển vạch đỏ Playhead vào vị trí cần cắt bỏ phần đầu Video!"
+            _uiState.update { state ->
+                state.copy(
+                    videoTrack = ShortVideoTrack(
+                        videoUri = info.uri.toString(),
+                        displayName = info.displayName,
+                        sourceDurationMs = info.durationMs,
+                        trimStartMs = 0L,
+                        trimEndMs = info.durationMs,
+                        isOriginalAudioMuted = state.videoTrack.isOriginalAudioMuted,
+                        segments = listOf(initialSegment)
+                    ),
+                    selectedClipId = initialSegment.id,
+                    playheadMs = 0L,
+                    statusMessage = "Đã nạp MP4: ${info.displayName}"
                 )
             }
-            val updatedVideo = video.copy(trimStartMs = newTrimStart)
-            state.copy(
-                videoTrack = updatedVideo,
-                playheadMs = 0L,
-                statusMessage = "✂️ Đã cắt đầu Video • Thời lượng mới: ${formatMs(updatedVideo.effectiveDurationMs)}"
-            )
-        }
-    }
-
-    fun trimVideoEndAtPlayhead() {
-        _uiState.update { state ->
-            val video = state.videoTrack
-            val cutSourceOffsetMs = (state.playheadMs * video.speedMultiplier).toLong()
-            val newTrimEnd = (video.trimStartMs + cutSourceOffsetMs)
-                .coerceIn(video.trimStartMs + 1_000L, video.originalDurationMs)
-
-            if (newTrimEnd == video.trimEndMs) {
-                return@update state.copy(
-                    statusMessage = "Di chuyển vạch đỏ Playhead vào vị trí cần cắt ngắn đuôi Video!"
-                )
-            }
-            val updatedVideo = video.copy(trimEndMs = newTrimEnd)
-            state.copy(
-                videoTrack = updatedVideo,
-                playheadMs = state.playheadMs.coerceAtMost(updatedVideo.effectiveDurationMs),
-                statusMessage = "✂️ Đã cắt ngắn đuôi Video • Thời lượng mới: ${formatMs(updatedVideo.effectiveDurationMs)}"
-            )
-        }
-    }
-
-    fun resetVideoTrim() {
-        _uiState.update { state ->
-            val video = state.videoTrack
-            val updated = video.copy(trimStartMs = 0L, trimEndMs = video.originalDurationMs)
-            state.copy(
-                videoTrack = updated,
-                statusMessage = "Đã khôi phục độ dài Video gốc (${formatMs(updated.effectiveDurationMs)})"
-            )
-        }
-    }
-
-    fun setVideoSpeed(speed: Float) {
-        val safeSpeed = speed.coerceIn(0.25f, 4.0f)
-        _uiState.update { state ->
-            val updatedVideo = state.videoTrack.copy(speedMultiplier = safeSpeed)
-            val newMaxDuration = updatedVideo.effectiveDurationMs.coerceAtMost(EditorConstraints.MAX_VIDEO_DURATION_MS)
-            state.copy(
-                videoTrack = updatedVideo,
-                playheadMs = state.playheadMs.coerceAtMost(newMaxDuration),
-                statusMessage = "Tốc độ Video: ${safeSpeed}x (${formatMs(newMaxDuration)})"
-            )
-        }
-    }
-
-    // =========================================================================
-    // 2. CHUYỂN TEXT THÀNH VOICE + SUB PHỤ ĐỀ KÈM THEO & KÉO/CẮT ĐOẠN VOICE
-    // =========================================================================
-
-    fun selectVoiceProfile(profile: OfflineVoiceProfile) {
-        _uiState.update {
-            it.copy(
-                selectedVoiceProfile = profile,
-                statusMessage = "Đã chọn giọng: ${profile.displayName}"
-            )
-        }
-    }
-
-    fun updateTtsInputText(newText: String) {
-        val capped = if (newText.length > AdMonetizationManager.MAX_CHARACTER_QUOTA) {
-            newText.take(AdMonetizationManager.MAX_CHARACTER_QUOTA)
-        } else {
-            newText
-        }
-        _uiState.update { it.copy(ttsInputText = capped) }
-    }
-
-    fun updateTtsSpeechRate(rate: Float) {
-        _uiState.update { it.copy(ttsSpeechRate = rate.coerceIn(0.6f, 1.8f)) }
-    }
-
-    fun previewVoiceSample(voice: OfflineVoiceProfile) {
-        viewModelScope.launch {
+        }.onFailure { err ->
             _uiState.update {
-                it.copy(statusMessage = "🔊 Đang tạo mẫu nghe thử giọng ${voice.displayName}...")
-            }
-            val sampleRes = ttsEngine.synthesizeWithSubtitles(
-                text = "Xin chào, đây là giọng đọc ${voice.displayName}.",
-                voiceProfile = voice,
-                speechSpeed = _uiState.value.ttsSpeechRate,
-                insertAtTimelineMs = 0L,
-                onStatusProgress = { progressMsg ->
-                    _uiState.update { s -> s.copy(statusMessage = progressMsg) }
-                }
-            )
-            sampleRes.onSuccess { clip ->
-                stopTtsAudioPlayer()
-                runCatching {
-                    val mp = createSpeechMediaPlayer(clip.audioFilePath, volume = 1.0f)
-                    mp.start()
-                    activeTtsMediaPlayer = mp
-                    _uiState.update {
-                        it.copy(statusMessage = "🔊 Đang phát mẫu giọng: ${voice.displayName}")
-                    }
-                }
-            }.onFailure { err ->
-                _uiState.update {
-                    it.copy(statusMessage = "Lỗi phát thử: ${err.message}")
-                }
+                it.copy(statusMessage = "⚠️ ${err.message}")
             }
         }
     }
 
-    /**
-     * Chuyển Text thành file Voice + Tự động sinh Sub phụ đề kèm theo:
-     * - Cho phép dùng TẤT CẢ giọng đọc.
-     * - Giới hạn 500 ký tự mỗi chu kỳ:
-     *   + Nếu hết ký tự (`remaining <= 0` hoặc `text.length > remaining`), tự động nhảy quảng cáo để cấp lại 500 ký tự rồi tiếp tục tạo.
-     *   + Ngay sau khi tạo xong mà số ký tự còn lại về `0`, cũng tự động nhảy quảng cáo để nạp sẵn 500 ký tự mới!
-     */
-    fun renderOfflineTtsAndAttachSubtitle(
-        activity: Activity? = null,
-        onComplete: (() -> Unit)? = null
-    ) {
-        val currentState = _uiState.value
-        val text = currentState.ttsInputText.trim()
+    fun toggleVideoOriginalAudioMute() {
+        _uiState.update { state ->
+            val nextMuted = !state.videoTrack.isOriginalAudioMuted
+            state.copy(
+                videoTrack = state.videoTrack.copy(isOriginalAudioMuted = nextMuted),
+                statusMessage = if (nextMuted) "Đã TẮT tiếng gốc MP4" else "Đã BẬT tiếng gốc MP4"
+            )
+        }
+    }
 
+    fun moveVideoSegmentByDelta(segmentId: String, deltaTimelineMs: Long) {
+        _uiState.update { state ->
+            val updatedSegs = state.videoTrack.segments.map { seg ->
+                if (seg.id == segmentId) {
+                    seg.copy(timelineStartMs = max(0L, seg.timelineStartMs + deltaTimelineMs))
+                } else {
+                    seg
+                }
+            }
+            state.copy(
+                videoTrack = state.videoTrack.copy(segments = updatedSegs)
+            )
+        }
+    }
+
+    // =========================================================================
+    // 2. CHUYỂN TEXT THÀNH VOICE AI + SUB PHỤ ĐỀ (TỐI ĐA 1000 KÝ TỰ / LẦN)
+    // =========================================================================
+
+    fun selectVoiceModel(voiceId: String) {
+        _uiState.update {
+            it.copy(selectedVoiceId = voiceId)
+        }
+    }
+
+    fun updateTtsSpeed(speed: Float) {
+        _uiState.update {
+            it.copy(ttsSpeed = speed.coerceIn(0.6f, 1.6f))
+        }
+    }
+
+    fun renderOfflineTtsAndAttachSubtitle(rawInputText: String) {
+        val text = rawInputText.trim()
         if (text.isEmpty()) {
-            _uiState.update { it.copy(statusMessage = "Vui lòng nhập văn bản cần chuyển thành Voice!") }
+            _uiState.update {
+                it.copy(statusMessage = "⚠️ Vui lòng nhập nội dung văn bản để tạo giọng đọc!")
+            }
             return
         }
 
-        val charCount = text.length
-        val remaining = adManager.getRemainingCharacters()
-
-        if (remaining <= 0 || charCount > remaining) {
-            stopPlaybackTicker()
-            pendingAutoRenderAfterAd = true
-            pendingCompletionCallbackAfterAd = onComplete
+        if (text.length > AdMonetizationManager.MAX_CHARACTER_QUOTA) {
             _uiState.update {
                 it.copy(
-                    isPlaying = false,
-                    remainingCharQuota = remaining,
-                    statusMessage = "📺 Đã hết hạn mức ký tự ($remaining/${AdMonetizationManager.MAX_CHARACTER_QUOTA}) • Tự động mở Quảng cáo để cấp lại 500 ký tự..."
+                    statusMessage = "⚠️ Vượt quá giới hạn ${AdMonetizationManager.MAX_CHARACTER_QUOTA} ký tự (${text.length}/${AdMonetizationManager.MAX_CHARACTER_QUOTA})!"
                 )
             }
-            triggerAutoAdAndRefill(activity)
             return
         }
 
-        executeSynthesisInternal(activity = activity, onComplete = onComplete)
-    }
-
-    private fun executeSynthesisInternal(
-        activity: Activity?,
-        onComplete: (() -> Unit)?
-    ) {
         val currentState = _uiState.value
-        val voice = currentState.selectedVoiceProfile
-        val text = currentState.ttsInputText.trim().take(AdMonetizationManager.MAX_CHARACTER_QUOTA)
-        if (text.isEmpty()) return
-
-        // Nếu tại vị trí Playhead đã có đoạn Voice khác, tự động nối tiếp sau đoạn đó để không đè lên nhau
-        val insertAtMs = if (currentState.voiceClips.any { currentState.playheadMs in it.timelineStartMs until it.timelineEndMs }) {
-            val maxEnd = currentState.voiceClips.maxOfOrNull { it.timelineEndMs } ?: 0L
-            (maxEnd + 200L).coerceAtMost((currentState.totalTimelineDurationMs - 1_000L).coerceAtLeast(0L))
-        } else {
-            currentState.playheadMs
-        }
+        val voiceItem = currentState.voiceCatalog.find { it.id == currentState.selectedVoiceId }
+            ?: currentState.voiceCatalog.first()
 
         viewModelScope.launch {
+            if (!voicePackManager.isVoiceDownloaded(voiceItem.id)) {
+                _uiState.update {
+                    it.copy(
+                        downloadingVoiceId = voiceItem.id,
+                        downloadProgressPercent = 5,
+                        statusMessage = "Đang tải giọng ${voiceItem.displayName}..."
+                    )
+                }
+                val dlResult = voicePackManager.downloadVoicePackFromCloud(voiceItem) { pct ->
+                    _uiState.update {
+                        it.copy(downloadProgressPercent = pct)
+                    }
+                }
+                if (dlResult.isFailure) {
+                    _uiState.update {
+                        it.copy(
+                            downloadingVoiceId = null,
+                            statusMessage = "⚠️ Không thể tải giọng ${voiceItem.displayName}: ${dlResult.exceptionOrNull()?.message}"
+                        )
+                    }
+                    return@launch
+                }
+                _uiState.update {
+                    it.copy(
+                        downloadingVoiceId = null,
+                        downloadedVoiceIds = voicePackManager.getDownloadedVoiceIds()
+                    )
+                }
+            }
+
             _uiState.update {
                 it.copy(
                     isSynthesizingTts = true,
-                    statusMessage = "⏳ Đang chuyển ${text.length} ký tự thành Voice (${voice.displayName})..."
+                    statusMessage = "Đang tạo giọng đọc ${voiceItem.displayName}..."
                 )
             }
 
-            val result = ttsEngine.synthesizeWithSubtitles(
+            val result = ttsEngine.synthesizeTextToAudioFile(
                 text = text,
-                voiceProfile = voice,
-                speechSpeed = currentState.ttsSpeechRate,
-                insertAtTimelineMs = insertAtMs,
-                onStatusProgress = { progressMsg ->
-                    _uiState.update { s -> s.copy(statusMessage = progressMsg) }
-                }
+                voiceItem = voiceItem,
+                speed = _uiState.value.ttsSpeed
             )
 
-            result.onSuccess { newClip ->
-                val remainingAfterUse = adManager.consumeCharacters(text.length)
-                val exhaustedNow = remainingAfterUse <= 0
+            result.onSuccess { synth ->
+                val stateSnapshot = _uiState.value
+                val insertStartMs = if (stateSnapshot.voiceClips.isEmpty()) {
+                    stateSnapshot.playheadMs
+                } else {
+                    val maxExistingEnd = stateSnapshot.voiceClips.maxOf { it.timelineEndMs }
+                    max(stateSnapshot.playheadMs, maxExistingEnd + 120L)
+                }
+
+                val newClip = VoiceSubtitleClip(
+                    id = "voice_${UUID.randomUUID().toString().take(8)}",
+                    voiceId = voiceItem.id,
+                    voiceDisplayName = voiceItem.displayName,
+                    subtitleText = text,
+                    audioFilePath = synth.audioFile.absolutePath,
+                    sourceDurationMs = synth.durationMs,
+                    timelineStartMs = insertStartMs,
+                    trimStartMs = 0L,
+                    trimEndMs = synth.durationMs
+                )
 
                 _uiState.update { state ->
                     state.copy(
                         isSynthesizingTts = false,
-                        remainingCharQuota = remainingAfterUse,
-                        voiceClips = (state.voiceClips + newClip).sortedBy { it.timelineStartMs },
+                        voiceClips = state.voiceClips + newClip,
                         selectedClipId = newClip.id,
-                        playheadMs = newClip.timelineStartMs,
-                        isPlaying = !exhaustedNow,
-                        statusMessage = if (exhaustedNow) {
-                            "📺 Đã dùng hết 500 ký tự • Tự động mở Quảng cáo để nạp lại 500 ký tự mới..."
-                        } else {
-                            "✅ Đã tạo Voice (${formatMs(newClip.durationMs)}) • Còn lại: $remainingAfterUse/${AdMonetizationManager.MAX_CHARACTER_QUOTA} ký tự"
-                        }
+                        playheadMs = insertStartMs,
+                        statusMessage = "Đã tạo Voice + Phụ đề (${synth.durationMs / 1000.0}s)"
                     )
-                }
-                onComplete?.invoke()
-
-                if (exhaustedNow) {
-                    // Vừa chạm mốc hết sạch 500 ký tự -> Tự động nhảy quảng cáo ngay lập tức!
-                    pendingAutoRenderAfterAd = false
-                    pendingCompletionCallbackAfterAd = null
-                    pendingPlayClipStartMsAfterAd = newClip.timelineStartMs
-                    triggerAutoAdAndRefill(activity)
-                } else {
-                    // Phát ngay đoạn Voice vừa tạo kèm phụ đề
-                    syncAudioPlaybackWithPlayhead(newClip.timelineStartMs, isPlaying = true, forceSeek = true)
-                    startPlaybackTicker()
                 }
             }.onFailure { err ->
                 _uiState.update {
                     it.copy(
                         isSynthesizingTts = false,
-                        statusMessage = "❌ Lỗi tạo Voice: ${err.message}"
+                        statusMessage = "⚠️ Lỗi tạo giọng đọc: ${err.message}"
                     )
                 }
             }
         }
     }
 
-    private fun triggerAutoAdAndRefill(activity: Activity?) {
-        adManager.triggerAutoAdForQuotaRefill(
-            activity = activity,
-            onQuotaRefilled = { refilledQuota ->
-                onAdQuotaRefillCompleted(refilledQuota, activity)
-            },
-            onShowFallbackAdOverlay = {
-                _uiState.update { it.copy(showFallbackQuotaAdDialog = true) }
+    // =========================================================================
+    // 3. NÚT "CẮT" DÙNG CHUNG (CHỌN ĐỐI TƯỢNG + VỊ TRÍ KIM ĐỎ PLAYHEAD -> BẤM CẮT)
+    // =========================================================================
+
+    fun splitSelectedOrActiveClipAtPlayhead() {
+        val state = _uiState.value
+        val playhead = state.playheadMs
+        val selectedId = state.selectedClipId
+        val videoSpeed = state.videoTrack.speedMultiplier
+
+        // 1. Nếu đang chọn một đoạn Video MP4 (hoặc ưu tiên đối tượng đang được chọn)
+        val selectedVidSeg = state.videoTrack.segments.find { it.id == selectedId }
+        if (selectedVidSeg != null) {
+            val splitPair = selectedVidSeg.splitAtTimelineMs(playhead, videoSpeed)
+            if (splitPair != null) {
+                val (leftSeg, rightSeg) = splitPair
+                val updatedSegs = state.videoTrack.segments.flatMap {
+                    if (it.id == selectedVidSeg.id) listOf(leftSeg, rightSeg) else listOf(it)
+                }
+                _uiState.update {
+                    it.copy(
+                        videoTrack = it.videoTrack.copy(segments = updatedSegs),
+                        selectedClipId = rightSeg.id,
+                        statusMessage = "✂️ Đã cắt chia đôi đoạn Video tại ${formatMs(playhead)}"
+                    )
+                }
+                return
+            } else {
+                _uiState.update {
+                    it.copy(statusMessage = "⚠️ Hãy di chuyển kim đỏ vào bên trong đoạn Video đang chọn rồi bấm 'Cắt'!")
+                }
+                return
             }
-        )
-    }
+        }
 
-    fun completeFallbackQuotaAd(activity: Activity? = null) {
-        val refilled = adManager.refillFullCharacterQuota()
-        _uiState.update { it.copy(showFallbackQuotaAdDialog = false) }
-        onAdQuotaRefillCompleted(refilled, activity)
-    }
+        // 2. Nếu đang chọn một đoạn Voice+Sub
+        val selectedVoice = state.voiceClips.find { it.id == selectedId }
+        if (selectedVoice != null) {
+            val splitPair = selectedVoice.splitAtTimelineMs(playhead)
+            if (splitPair != null) {
+                val (leftClip, rightClip) = splitPair
+                val updatedList = state.voiceClips.flatMap {
+                    if (it.id == selectedVoice.id) listOf(leftClip, rightClip) else listOf(it)
+                }
+                _uiState.update {
+                    it.copy(
+                        voiceClips = updatedList,
+                        selectedClipId = rightClip.id,
+                        statusMessage = "✂️ Đã cắt chia đôi đoạn Voice & Phụ đề tại ${formatMs(playhead)}"
+                    )
+                }
+                return
+            } else {
+                _uiState.update {
+                    it.copy(statusMessage = "⚠️ Hãy di chuyển kim đỏ vào bên trong đoạn Voice đang chọn rồi bấm 'Cắt'!")
+                }
+                return
+            }
+        }
 
-    private fun onAdQuotaRefillCompleted(refilledQuota: Int, activity: Activity?) {
-        val shouldRenderNow = pendingAutoRenderAfterAd
-        val savedCallback = pendingCompletionCallbackAfterAd
-        val playStartAfterAd = pendingPlayClipStartMsAfterAd
+        // 3. Nếu đang chọn một Tiêu đề (CanvasTextOverlayItem)
+        val selectedText = state.textOverlays.find { it.id == selectedId }
+        if (selectedText != null) {
+            if (playhead >= selectedText.startTimeMs + 250L && playhead <= selectedText.endTimeMs - 250L) {
+                val leftText = selectedText.copy(
+                    id = "${selectedText.id}_L_${System.currentTimeMillis() % 1000}",
+                    endTimeMs = playhead
+                )
+                val rightText = selectedText.copy(
+                    id = "${selectedText.id}_R_${System.currentTimeMillis() % 1000}",
+                    startTimeMs = playhead
+                )
+                val updated = state.textOverlays.flatMap {
+                    if (it.id == selectedText.id) listOf(leftText, rightText) else listOf(it)
+                }
+                _uiState.update {
+                    it.copy(
+                        textOverlays = updated,
+                        selectedClipId = rightText.id,
+                        statusMessage = "✂️ Đã cắt chia đôi Tiêu đề tại ${formatMs(playhead)}"
+                    )
+                }
+                return
+            } else {
+                _uiState.update {
+                    it.copy(statusMessage = "⚠️ Hãy di chuyển kim đỏ vào bên trong đoạn Tiêu đề đang chọn rồi bấm 'Cắt'!")
+                }
+                return
+            }
+        }
 
-        pendingAutoRenderAfterAd = false
-        pendingCompletionCallbackAfterAd = null
-        pendingPlayClipStartMsAfterAd = null
+        // 4. Nếu đang chọn một Sticker (CanvasImageOverlayItem)
+        val selectedSticker = state.imageOverlays.find { it.id == selectedId }
+        if (selectedSticker != null) {
+            if (playhead >= selectedSticker.startTimeMs + 250L && playhead <= selectedSticker.endTimeMs - 250L) {
+                val leftSticker = selectedSticker.copy(
+                    id = "${selectedSticker.id}_L_${System.currentTimeMillis() % 1000}",
+                    endTimeMs = playhead
+                )
+                val rightSticker = selectedSticker.copy(
+                    id = "${selectedSticker.id}_R_${System.currentTimeMillis() % 1000}",
+                    startTimeMs = playhead
+                )
+                val updated = state.imageOverlays.flatMap {
+                    if (it.id == selectedSticker.id) listOf(leftSticker, rightSticker) else listOf(it)
+                }
+                _uiState.update {
+                    it.copy(
+                        imageOverlays = updated,
+                        selectedClipId = rightSticker.id,
+                        statusMessage = "✂️ Đã cắt chia đôi Sticker tại ${formatMs(playhead)}"
+                    )
+                }
+                return
+            } else {
+                _uiState.update {
+                    it.copy(statusMessage = "⚠️ Hãy di chuyển kim đỏ vào bên trong đoạn Sticker đang chọn rồi bấm 'Cắt'!")
+                }
+                return
+            }
+        }
+
+        // 5. Nếu chưa chọn đối tượng nào, tự động tìm đối tượng nằm ngay dưới kim đỏ Playhead (ưu tiên Voice -> Video)
+        val autoVoice = state.voiceClips.find {
+            playhead > it.timelineStartMs + 220L && playhead < it.timelineEndMs - 220L
+        }
+        if (autoVoice != null) {
+            val splitPair = autoVoice.splitAtTimelineMs(playhead)
+            if (splitPair != null) {
+                val (leftClip, rightClip) = splitPair
+                val updatedList = state.voiceClips.flatMap {
+                    if (it.id == autoVoice.id) listOf(leftClip, rightClip) else listOf(it)
+                }
+                _uiState.update {
+                    it.copy(
+                        voiceClips = updatedList,
+                        selectedClipId = rightClip.id,
+                        statusMessage = "✂️ Đã cắt chia đôi đoạn Voice & Phụ đề tại ${formatMs(playhead)}"
+                    )
+                }
+                return
+            }
+        }
+
+        val autoVid = state.videoTrack.segments.find {
+            playhead > it.timelineStartMs + 250L && playhead < it.timelineEndAtSpeedMs(videoSpeed) - 250L
+        }
+        if (autoVid != null) {
+            val splitPair = autoVid.splitAtTimelineMs(playhead, videoSpeed)
+            if (splitPair != null) {
+                val (leftSeg, rightSeg) = splitPair
+                val updatedSegs = state.videoTrack.segments.flatMap {
+                    if (it.id == autoVid.id) listOf(leftSeg, rightSeg) else listOf(it)
+                }
+                _uiState.update {
+                    it.copy(
+                        videoTrack = it.videoTrack.copy(segments = updatedSegs),
+                        selectedClipId = rightSeg.id,
+                        statusMessage = "✂️ Đã cắt chia đôi đoạn Video tại ${formatMs(playhead)}"
+                    )
+                }
+                return
+            }
+        }
 
         _uiState.update {
             it.copy(
-                remainingCharQuota = refilledQuota,
-                totalAdsWatched = adManager.getTotalAdsWatchedByUser(),
-                statusMessage = "🎉 Đã xem Quảng cáo • Đã cấp lại $refilledQuota/$refilledQuota ký tự cho tất cả giọng đọc!"
+                statusMessage = "⚠️ Hãy chạm chọn đối tượng (Video / Voice / Tiêu đề / Sticker) và đặt kim đỏ vào vị trí cần cắt!"
             )
-        }
-
-        if (shouldRenderNow) {
-            executeSynthesisInternal(activity = activity, onComplete = savedCallback)
-        } else if (playStartAfterAd != null) {
-            _uiState.update { it.copy(playheadMs = playStartAfterAd, isPlaying = true) }
-            syncAudioPlaybackWithPlayhead(playStartAfterAd, isPlaying = true, forceSeek = true)
-            startPlaybackTicker()
         }
     }
 
     fun moveVoiceClipByDelta(clipId: String, deltaTimelineMs: Long) {
         _uiState.update { state ->
-            val maxDuration = state.totalTimelineDurationMs
-            val updatedClips = state.voiceClips.map { clip ->
+            val updated = state.voiceClips.map { clip ->
                 if (clip.id == clipId) {
-                    clip.moveTo(clip.timelineStartMs + deltaTimelineMs, maxDuration)
+                    val nextStart = max(0L, clip.timelineStartMs + deltaTimelineMs)
+                    clip.copy(timelineStartMs = nextStart)
                 } else {
                     clip
                 }
             }
-            state.copy(
-                voiceClips = updatedClips,
-                selectedClipId = clipId,
-                statusMessage = "Đang kéo đoạn Voice • Phụ đề tự động trượt theo khớp với Video"
-            )
+            state.copy(voiceClips = updated)
         }
     }
 
-    fun moveSubtitleOverlayOnCanvas(deltaNormX: Float, deltaNormY: Float) {
+    fun moveSecondaryMp3ClipByDelta(clipId: String, deltaTimelineMs: Long) {
         _uiState.update { state ->
-            val current = state.subtitleStyle
-            val nextX = (current.normalizedX + deltaNormX).coerceIn(0.10f, 0.90f)
-            val nextY = (current.normalizedY + deltaNormY).coerceIn(0.08f, 0.92f)
-            state.copy(
-                subtitleStyle = current.copy(normalizedX = nextX, normalizedY = nextY)
-            )
-        }
-    }
-
-    /**
-     * Điều chỉnh Size chữ Phụ đề (fontSizeSp: 10..36sp) và Độ rõ/Làm mờ Phụ đề.
-     */
-    fun updateSubtitleStyle(
-        fontSizeSp: Float? = null,
-        opacity: Float? = null,
-        blurRadiusDp: Float? = null
-    ) {
-        _uiState.update { state ->
-            val cur = state.subtitleStyle
-            val nextSize = fontSizeSp?.coerceIn(10f, 36f) ?: cur.fontSizeSp
-            val nextOpacity = opacity?.coerceIn(0.1f, 1.0f) ?: cur.opacity
-            val nextBlur = blurRadiusDp?.coerceIn(0f, 20f) ?: cur.blurRadiusDp
-            state.copy(
-                subtitleStyle = cur.copy(
-                    fontSizeSp = nextSize,
-                    opacity = nextOpacity,
-                    blurRadiusDp = nextBlur
-                )
-            )
-        }
-    }
-
-    // =========================================================================
-    // 3. NHẬP CHỮ (TEXT) & ICON / LOGO PNG (LÀM MỜ + KÉO THẢ VỊ TRÍ BẤT KỲ)
-    // =========================================================================
-
-    fun addTextOverlay(
-        text: String,
-        fontSizeSp: Float = 20f,
-        colorHex: Long = 0xFFFFFFFF,
-        opacity: Float = 1.0f,
-        blurRadiusDp: Float = 0f
-    ) {
-        val cleaned = text.trim()
-        if (cleaned.isEmpty()) return
-
-        _uiState.update { state ->
-            val startMs = state.playheadMs
-            val endMs = (startMs + 6_000L).coerceAtMost(state.totalTimelineDurationMs)
-                .coerceAtLeast(startMs + 1_500L)
-            val newItem = CanvasTextOverlayItem(
-                text = cleaned,
-                normalizedX = 0.5f,
-                normalizedY = (0.25f + (state.textOverlays.size % 4) * 0.12f).coerceIn(0.15f, 0.75f),
-                fontSizeSp = fontSizeSp,
-                colorHex = colorHex,
-                opacity = opacity.coerceIn(0.1f, 1.0f),
-                blurRadiusDp = blurRadiusDp.coerceIn(0f, 25f),
-                timelineStartMs = startMs,
-                timelineEndMs = endMs
-            )
-            state.copy(
-                textOverlays = state.textOverlays + newItem,
-                selectedClipId = newItem.id,
-                statusMessage = "Đã thêm chữ '${newItem.text}' • Kéo thả trực tiếp trên Khu View 9:16"
-            )
-        }
-    }
-
-    fun updateSelectedTextOverlay(
-        text: String? = null,
-        fontSizeSp: Float? = null,
-        colorHex: Long? = null,
-        opacity: Float? = null,
-        blurRadiusDp: Float? = null
-    ) {
-        val targetId = _uiState.value.selectedClipId ?: return
-        _uiState.update { state ->
-            state.copy(
-                textOverlays = state.textOverlays.map { item ->
-                    if (item.id == targetId) {
-                        item.copy(
-                            text = text ?: item.text,
-                            fontSizeSp = fontSizeSp?.coerceIn(10f, 56f) ?: item.fontSizeSp,
-                            colorHex = colorHex ?: item.colorHex,
-                            opacity = opacity?.coerceIn(0.05f, 1.0f) ?: item.opacity,
-                            blurRadiusDp = blurRadiusDp?.coerceIn(0f, 25f) ?: item.blurRadiusDp
-                        )
-                    } else {
-                        item
-                    }
+            val updated = state.secondaryMp3Clips.map { clip ->
+                if (clip.id == clipId) {
+                    clip.copy(timelineStartMs = max(0L, clip.timelineStartMs + deltaTimelineMs))
+                } else {
+                    clip
                 }
-            )
-        }
-    }
-
-    fun moveTextOverlayOnCanvas(overlayId: String, deltaNormX: Float, deltaNormY: Float) {
-        _uiState.update { state ->
-            state.copy(
-                selectedClipId = overlayId,
-                textOverlays = state.textOverlays.map { item ->
-                    if (item.id == overlayId) {
-                        item.copy(
-                            normalizedX = (item.normalizedX + deltaNormX).coerceIn(0.08f, 0.92f),
-                            normalizedY = (item.normalizedY + deltaNormY).coerceIn(0.06f, 0.94f)
-                        )
-                    } else {
-                        item
-                    }
-                }
-            )
-        }
-    }
-
-    fun moveTextOverlayOnTimeline(overlayId: String, deltaTimelineMs: Long) {
-        _uiState.update { state ->
-            val maxDuration = state.totalTimelineDurationMs
-            state.copy(
-                selectedClipId = overlayId,
-                textOverlays = state.textOverlays.map { item ->
-                    if (item.id == overlayId) {
-                        item.moveTimelineTo(item.timelineStartMs + deltaTimelineMs, maxDuration)
-                    } else {
-                        item
-                    }
-                }
-            )
-        }
-    }
-
-    fun importLogoPngOverlay(uri: Uri) {
-        viewModelScope.launch {
-            val copiedFile = withContext(Dispatchers.IO) {
-                runCatching {
-                    val overlayDir = File(getApplication<Application>().filesDir, "overlays").apply { mkdirs() }
-                    val dstFile = File(overlayDir, "logo_${System.currentTimeMillis()}.png")
-                    getApplication<Application>().contentResolver.openInputStream(uri)?.use { input ->
-                        FileOutputStream(dstFile).use { output ->
-                            input.copyTo(output)
-                        }
-                    }
-                    if (dstFile.exists() && dstFile.length() > 0L) dstFile else null
-                }.getOrNull()
             }
-
-            val resolvedUri = copiedFile?.let { Uri.fromFile(it).toString() } ?: uri.toString()
-            val displayName = uri.lastPathSegment?.substringAfterLast('/') ?: "Logo.png"
-
-            _uiState.update { state ->
-                val startMs = state.playheadMs
-                val endMs = state.totalTimelineDurationMs.coerceAtLeast(startMs + 3_000L)
-                val newLogo = CanvasImageOverlayItem(
-                    name = displayName,
-                    imageUri = resolvedUri,
-                    normalizedX = 0.78f,
-                    normalizedY = 0.16f,
-                    sizeDp = 72f,
-                    opacity = 1.0f,
-                    blurRadiusDp = 0f,
-                    timelineStartMs = startMs,
-                    timelineEndMs = endMs
-                )
-                state.copy(
-                    imageOverlays = state.imageOverlays + newLogo,
-                    selectedClipId = newLogo.id,
-                    statusMessage = "Đã chèn Logo PNG ($displayName) • Kéo thả trên Khu View 9:16 & chỉnh làm mờ"
-                )
-            }
+            state.copy(secondaryMp3Clips = updated)
         }
     }
 
-    fun addSampleLogoPngOverlay(badgeLabel: String = "LOGO") {
-        viewModelScope.launch {
-            val logoFile = withContext(Dispatchers.IO) {
-                val overlayDir = File(getApplication<Application>().filesDir, "overlays").apply { mkdirs() }
-                val outFile = File(overlayDir, "badge_${System.currentTimeMillis()}.png")
-                val bmp = Bitmap.createBitmap(240, 240, Bitmap.Config.ARGB_8888)
-                val canvas = Canvas(bmp)
-                val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = android.graphics.Color.argb(220, 0, 229, 255)
-                    style = Paint.Style.FILL
-                }
-                val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = android.graphics.Color.WHITE
-                    style = Paint.Style.STROKE
-                    strokeWidth = 8f
-                }
-                val rect = RectF(16f, 44f, 224f, 196f)
-                canvas.drawRoundRect(rect, 36f, 36f, bgPaint)
-                canvas.drawRoundRect(rect, 36f, 36f, borderPaint)
-
-                val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = android.graphics.Color.BLACK
-                    textSize = 38f
-                    textAlign = Paint.Align.CENTER
-                    isFakeBoldText = true
-                }
-                canvas.drawText(badgeLabel.take(9), 120f, 134f, textPaint)
-                FileOutputStream(outFile).use { fos ->
-                    bmp.compress(Bitmap.CompressFormat.PNG, 100, fos)
-                }
-                bmp.recycle()
-                outFile
-            }
-
-            _uiState.update { state ->
-                val startMs = state.playheadMs
-                val endMs = state.totalTimelineDurationMs.coerceAtLeast(startMs + 3_000L)
-                val newLogo = CanvasImageOverlayItem(
-                    name = "Logo_$badgeLabel.png",
-                    imageUri = Uri.fromFile(logoFile).toString(),
-                    normalizedX = 0.78f,
-                    normalizedY = 0.16f,
-                    sizeDp = 72f,
-                    opacity = 0.95f,
-                    blurRadiusDp = 0f,
-                    timelineStartMs = startMs,
-                    timelineEndMs = endMs
-                )
-                state.copy(
-                    imageOverlays = state.imageOverlays + newLogo,
-                    selectedClipId = newLogo.id,
-                    statusMessage = "Đã tạo Logo PNG '$badgeLabel' • Kéo thả vị trí bất kỳ & chỉnh độ mờ"
-                )
-            }
-        }
-    }
-
-    fun updateSelectedImageOverlay(
-        sizeDp: Float? = null,
-        opacity: Float? = null,
-        blurRadiusDp: Float? = null
-    ) {
-        val targetId = _uiState.value.selectedClipId ?: return
-        _uiState.update { state ->
-            state.copy(
-                imageOverlays = state.imageOverlays.map { item ->
-                    if (item.id == targetId) {
-                        item.copy(
-                            sizeDp = sizeDp?.coerceIn(28f, 220f) ?: item.sizeDp,
-                            opacity = opacity?.coerceIn(0.05f, 1.0f) ?: item.opacity,
-                            blurRadiusDp = blurRadiusDp?.coerceIn(0f, 25f) ?: item.blurRadiusDp
-                        )
-                    } else {
-                        item
-                    }
-                }
-            )
-        }
-    }
-
-    fun moveImageOverlayOnCanvas(overlayId: String, deltaNormX: Float, deltaNormY: Float) {
-        _uiState.update { state ->
-            state.copy(
-                selectedClipId = overlayId,
-                imageOverlays = state.imageOverlays.map { item ->
-                    if (item.id == overlayId) {
-                        item.copy(
-                            normalizedX = (item.normalizedX + deltaNormX).coerceIn(0.06f, 0.94f),
-                            normalizedY = (item.normalizedY + deltaNormY).coerceIn(0.06f, 0.94f)
-                        )
-                    } else {
-                        item
-                    }
-                }
-            )
-        }
-    }
-
-    fun moveImageOverlayOnTimeline(overlayId: String, deltaTimelineMs: Long) {
-        _uiState.update { state ->
-            val maxDuration = state.totalTimelineDurationMs
-            state.copy(
-                selectedClipId = overlayId,
-                imageOverlays = state.imageOverlays.map { item ->
-                    if (item.id == overlayId) {
-                        item.moveTimelineTo(item.timelineStartMs + deltaTimelineMs, maxDuration)
-                    } else {
-                        item
-                    }
-                }
-            )
-        }
-    }
-
-    // =========================================================================
-    // 4. CẮT CHIA ĐOẠN (SPLIT) VOICE / TEXT / LOGO TẠI PLAYHEAD & XÓA
-    // =========================================================================
-
-    fun splitSelectedOrActiveClipAtPlayhead() {
+    fun deleteSelectedClip() {
         val state = _uiState.value
-        val cutMs = state.playheadMs
-
-        val targetVoiceClip = state.voiceClips.firstOrNull {
-            it.id == state.selectedClipId && cutMs in it.timelineStartMs..it.timelineEndMs
-        } ?: state.voiceClips.firstOrNull {
-            cutMs in it.timelineStartMs..it.timelineEndMs
-        }
-
-        if (targetVoiceClip != null) {
-            val splitPair = targetVoiceClip.splitAtTimelineMs(cutMs)
-            if (splitPair == null) {
-                _uiState.update {
-                    it.copy(statusMessage = "Điểm cắt quá sát mép đoạn Voice (cần cách mép ít nhất 0.2s).")
-                }
-                return
-            }
-
-            val (leftClip, rightClip) = splitPair
-            _uiState.update { current ->
-                val remaining = current.voiceClips.filterNot { it.id == targetVoiceClip.id }
-                current.copy(
-                    voiceClips = (remaining + leftClip + rightClip).sortedBy { it.timelineStartMs },
-                    selectedClipId = rightClip.id,
-                    statusMessage = "✂️ Đã cắt đôi Voice & Phụ đề: [${leftClip.words.size} từ] | [${rightClip.words.size} từ]. Kéo thả từng đoạn tùy ý!"
-                )
+        val id = state.selectedClipId ?: run {
+            _uiState.update {
+                it.copy(statusMessage = "⚠️ Chạm chọn một đối tượng trên Timeline trước khi bấm Xóa!")
             }
             return
         }
 
-        val targetText = state.textOverlays.firstOrNull {
-            it.id == state.selectedClipId && cutMs in it.timelineStartMs..it.timelineEndMs
-        }
-        if (targetText != null) {
-            val splitText = targetText.splitAtTimelineMs(cutMs)
-            if (splitText != null) {
-                val (leftT, rightT) = splitText
-                _uiState.update { current ->
-                    val remaining = current.textOverlays.filterNot { it.id == targetText.id }
-                    current.copy(
-                        textOverlays = (remaining + leftT + rightT).sortedBy { it.timelineStartMs },
-                        selectedClipId = rightT.id,
-                        statusMessage = "✂️ Đã tách đôi đoạn Chữ (Text) tại ${formatMs(cutMs)}"
-                    )
-                }
-                return
-            }
-        }
-
-        val targetImage = state.imageOverlays.firstOrNull {
-            it.id == state.selectedClipId && cutMs in it.timelineStartMs..it.timelineEndMs
-        }
-        if (targetImage != null) {
-            val splitImg = targetImage.splitAtTimelineMs(cutMs)
-            if (splitImg != null) {
-                val (leftI, rightI) = splitImg
-                _uiState.update { current ->
-                    val remaining = current.imageOverlays.filterNot { it.id == targetImage.id }
-                    current.copy(
-                        imageOverlays = (remaining + leftI + rightI).sortedBy { it.timelineStartMs },
-                        selectedClipId = rightI.id,
-                        statusMessage = "✂️ Đã tách đôi đoạn Logo PNG tại ${formatMs(cutMs)}"
-                    )
-                }
-                return
-            }
-        }
+        val isVidSeg = state.videoTrack.segments.any { it.id == id }
+        val updatedVidSegs = state.videoTrack.segments.filterNot { it.id == id }
 
         _uiState.update {
-            it.copy(statusMessage = "Hãy di chuyển vạch đỏ Playhead vào giữa đoạn Voice, Chữ hoặc Logo cần cắt!")
+            it.copy(
+                videoTrack = if (isVidSeg) it.videoTrack.copy(segments = updatedVidSegs) else it.videoTrack,
+                voiceClips = it.voiceClips.filterNot { c -> c.id == id },
+                secondaryMp3Clips = it.secondaryMp3Clips.filterNot { c -> c.id == id },
+                textOverlays = it.textOverlays.filterNot { c -> c.id == id },
+                imageOverlays = it.imageOverlays.filterNot { c -> c.id == id },
+                selectedClipId = null,
+                statusMessage = "🗑️ Đã xóa đối tượng đã chọn khỏi Timeline"
+            )
         }
+    }
+
+    // =========================================================================
+    // 4. TIÊU ĐỀ & STICKER + LÀM MỜ + KÉO THẢ VỊ TRÍ BẤT KỲ
+    // =========================================================================
+
+    fun addCanvasTextOverlay(
+        text: String,
+        fontSizeSp: Float = 18f,
+        opacity: Float = 1.0f,
+        blurRadiusDp: Float = 0f
+    ) {
+        val clean = text.trim()
+        if (clean.isEmpty()) return
+
+        val state = _uiState.value
+        val startMs = state.playheadMs
+        val endMs = min(state.totalTimelineDurationMs, startMs + 6_000L)
+
+        val item = CanvasTextOverlayItem(
+            id = "txt_${UUID.randomUUID().toString().take(8)}",
+            text = clean,
+            xFraction = 0.5f,
+            yFraction = 0.25f,
+            fontSizeSp = fontSizeSp.coerceIn(10f, 38f),
+            opacity = opacity.coerceIn(0.1f, 1.0f),
+            blurRadiusDp = blurRadiusDp.coerceIn(0f, 25f),
+            startTimeMs = startMs,
+            endTimeMs = max(startMs + 2_000L, endMs)
+        )
+
+        _uiState.update {
+            it.copy(
+                textOverlays = it.textOverlays + item,
+                selectedClipId = item.id,
+                statusMessage = "Đã thêm Tiêu đề: \"$clean\""
+            )
+        }
+    }
+
+    fun addLogoPngOverlay(
+        imageUri: Uri,
+        label: String = "Sticker",
+        opacity: Float = 1.0f,
+        blurRadiusDp: Float = 0f
+    ) {
+        val state = _uiState.value
+        val startMs = state.playheadMs
+        val endMs = min(state.totalTimelineDurationMs, startMs + 8_000L)
+
+        val item = CanvasImageOverlayItem(
+            id = "img_${UUID.randomUUID().toString().take(8)}",
+            imageUri = imageUri.toString(),
+            label = label,
+            xFraction = 0.80f,
+            yFraction = 0.14f,
+            scale = 1.0f,
+            opacity = opacity.coerceIn(0.1f, 1.0f),
+            blurRadiusDp = blurRadiusDp.coerceIn(0f, 25f),
+            startTimeMs = startMs,
+            endTimeMs = max(startMs + 2_000L, endMs)
+        )
+
+        _uiState.update {
+            it.copy(
+                imageOverlays = it.imageOverlays + item,
+                selectedClipId = item.id,
+                statusMessage = "Đã thêm Sticker"
+            )
+        }
+    }
+
+    fun updateSubtitlePosition(xFraction: Float, yFraction: Float) {
+        _uiState.update { state ->
+            state.copy(
+                subtitleConfig = state.subtitleConfig.copy(
+                    xFraction = xFraction.coerceIn(0.08f, 0.92f),
+                    yFraction = yFraction.coerceIn(0.06f, 0.94f)
+                )
+            )
+        }
+    }
+
+    fun updateSubtitleBlurAndOpacity(opacity: Float, blurDp: Float) {
+        _uiState.update { state ->
+            state.copy(
+                subtitleConfig = state.subtitleConfig.copy(
+                    opacity = opacity.coerceIn(0.15f, 1.0f),
+                    blurRadiusDp = blurDp.coerceIn(0f, 20f)
+                )
+            )
+        }
+    }
+
+    fun updateSubtitleFontSize(fontSizeSp: Float) {
+        _uiState.update { state ->
+            state.copy(
+                subtitleConfig = state.subtitleConfig.copy(
+                    fontSizeSp = fontSizeSp.coerceIn(9f, 28f)
+                )
+            )
+        }
+    }
+
+    fun updateTextOverlayPosition(id: String, xFraction: Float, yFraction: Float) {
+        _uiState.update { state ->
+            state.copy(
+                textOverlays = state.textOverlays.map { item ->
+                    if (item.id == id) {
+                        item.copy(
+                            xFraction = xFraction.coerceIn(0.05f, 0.95f),
+                            yFraction = yFraction.coerceIn(0.05f, 0.95f)
+                        )
+                    } else item
+                },
+                selectedClipId = id
+            )
+        }
+    }
+
+    fun updateTextOverlayBlurAndOpacity(id: String, opacity: Float, blurRadiusDp: Float) {
+        _uiState.update { state ->
+            state.copy(
+                textOverlays = state.textOverlays.map { item ->
+                    if (item.id == id) {
+                        item.copy(
+                            opacity = opacity.coerceIn(0.1f, 1.0f),
+                            blurRadiusDp = blurRadiusDp.coerceIn(0f, 25f)
+                        )
+                    } else item
+                }
+            )
+        }
+    }
+
+    fun updateTextOverlayFontSize(id: String, fontSizeSp: Float) {
+        _uiState.update { state ->
+            state.copy(
+                textOverlays = state.textOverlays.map { item ->
+                    if (item.id == id) {
+                        item.copy(fontSizeSp = fontSizeSp.coerceIn(10f, 38f))
+                    } else item
+                }
+            )
+        }
+    }
+
+    fun moveTextOverlayTimeline(id: String, deltaMs: Long) {
+        _uiState.update { state ->
+            state.copy(
+                textOverlays = state.textOverlays.map { item ->
+                    if (item.id == id) {
+                        val duration = item.endTimeMs - item.startTimeMs
+                        val newStart = max(0L, item.startTimeMs + deltaMs)
+                        item.copy(startTimeMs = newStart, endTimeMs = newStart + duration)
+                    } else item
+                }
+            )
+        }
+    }
+
+    fun updateImageOverlayPosition(id: String, xFraction: Float, yFraction: Float) {
+        _uiState.update { state ->
+            state.copy(
+                imageOverlays = state.imageOverlays.map { item ->
+                    if (item.id == id) {
+                        item.copy(
+                            xFraction = xFraction.coerceIn(0.05f, 0.95f),
+                            yFraction = yFraction.coerceIn(0.05f, 0.95f)
+                        )
+                    } else item
+                },
+                selectedClipId = id
+            )
+        }
+    }
+
+    fun updateImageOverlayBlurOpacityScale(id: String, opacity: Float, blurRadiusDp: Float, scale: Float) {
+        _uiState.update { state ->
+            state.copy(
+                imageOverlays = state.imageOverlays.map { item ->
+                    if (item.id == id) {
+                        item.copy(
+                            opacity = opacity.coerceIn(0.1f, 1.0f),
+                            blurRadiusDp = blurRadiusDp.coerceIn(0f, 25f),
+                            scale = scale.coerceIn(0.3f, 2.5f)
+                        )
+                    } else item
+                }
+            )
+        }
+    }
+
+    fun moveImageOverlayTimeline(id: String, deltaMs: Long) {
+        _uiState.update { state ->
+            state.copy(
+                imageOverlays = state.imageOverlays.map { item ->
+                    if (item.id == id) {
+                        val duration = item.endTimeMs - item.startTimeMs
+                        val newStart = max(0L, item.startTimeMs + deltaMs)
+                        item.copy(startTimeMs = newStart, endTimeMs = newStart + duration)
+                    } else item
+                }
+            )
+        }
+    }
+
+    // =========================================================================
+    // 5. ĐIỀU KHIỂN PLAYHEAD & XUẤT FILE (MP3 HOẶC MP4) KÈM QUẢNG CÁO TRƯỚC KHI XUẤT
+    // =========================================================================
+
+    fun seekPlayhead(ms: Long) {
+        _uiState.update { state ->
+            state.copy(playheadMs = ms.coerceIn(0L, state.totalTimelineDurationMs))
+        }
+    }
+
+    fun setPlaying(playing: Boolean) {
+        _uiState.update { it.copy(isPlaying = playing) }
     }
 
     fun selectClip(clipId: String?) {
         _uiState.update { it.copy(selectedClipId = clipId) }
     }
 
-    fun deleteSelectedClip() {
-        val selectedId = _uiState.value.selectedClipId ?: return
-        _uiState.update { state ->
-            state.copy(
-                voiceClips = state.voiceClips.filterNot { it.id == selectedId },
-                textOverlays = state.textOverlays.filterNot { it.id == selectedId },
-                imageOverlays = state.imageOverlays.filterNot { it.id == selectedId },
-                selectedClipId = null,
-                statusMessage = "Đã xóa phần tử đang chọn."
+    fun requestExportFormatSelection() {
+        _uiState.update {
+            it.copy(
+                isPlaying = false,
+                showExportFormatSheet = true
             )
         }
     }
 
-    // =========================================================================
-    // 5. PHÁT XEM THỬ (PREVIEW) & XUẤT VIDEO MP4 9:16
-    // =========================================================================
-
-    fun seekTo(positionMs: Long) {
-        val maxMs = _uiState.value.totalTimelineDurationMs
-        val clamped = positionMs.coerceIn(0L, maxMs)
-        _uiState.update { it.copy(playheadMs = clamped) }
-        syncAudioPlaybackWithPlayhead(clamped, _uiState.value.isPlaying, forceSeek = true)
-    }
-
-    fun togglePlayPause() {
-        val willPlay = !_uiState.value.isPlaying
-        _uiState.update { state ->
-            val resetPlayhead = if (willPlay && state.playheadMs >= state.totalTimelineDurationMs) 0L else state.playheadMs
-            state.copy(isPlaying = willPlay, playheadMs = resetPlayhead)
-        }
-
-        if (willPlay) {
-            syncAudioPlaybackWithPlayhead(_uiState.value.playheadMs, isPlaying = true, forceSeek = true)
-            startPlaybackTicker()
-        } else {
-            stopPlaybackTicker()
+    fun dismissExportFormatSelection() {
+        _uiState.update {
+            it.copy(showExportFormatSheet = false)
         }
     }
 
-    private fun startPlaybackTicker() {
-        playbackJob?.cancel()
-        playbackJob = viewModelScope.launch {
-            val anchorPlayheadMs = _uiState.value.playheadMs
-            val anchorWallClockMs = SystemClock.elapsedRealtime()
-            val tickDelayMs = 25L
-
-            while (isActive && _uiState.value.isPlaying) {
-                delay(tickDelayMs)
-                val current = _uiState.value
-                val elapsedWallMs = (SystemClock.elapsedRealtime() - anchorWallClockMs).coerceAtLeast(0L)
-                val nextMs = anchorPlayheadMs + elapsedWallMs
-
-                if (nextMs >= current.totalTimelineDurationMs) {
-                    _uiState.update { it.copy(playheadMs = current.totalTimelineDurationMs, isPlaying = false) }
-                    stopTtsAudioPlayer()
-                    break
-                } else {
-                    _uiState.update { it.copy(playheadMs = nextMs) }
-                    syncAudioPlaybackWithPlayhead(nextMs, isPlaying = true, forceSeek = false)
-                }
+    /**
+     * Khi người dùng chọn Xuất MP3 hoặc Xuất MP4:
+     * 1. Kiểm tra điều kiện hợp lệ (MP3 cần có ít nhất 1 đoạn Voice, MP4 cần đã chọn Video MP4).
+     * 2. Bật quảng cáo toàn màn hình (AdMob hoặc Fallback Ad 5s).
+     * 3. Sau khi quảng cáo kết thúc mới tự động thực thi xuất file.
+     */
+    fun startExportWithAd(format: ExportFormat, activity: Activity?) {
+        val state = _uiState.value
+        if (format == ExportFormat.MP3 && state.voiceClips.isEmpty()) {
+            _uiState.update {
+                it.copy(
+                    showExportFormatSheet = false,
+                    statusMessage = "⚠️ Chưa có đoạn Voice AI nào trên Timeline để xuất MP3! Hãy bấm 'Tạo Voice+Sub' trước."
+                )
             }
+            return
         }
-    }
+        if (format == ExportFormat.MP4 && state.videoTrack.videoUri.isBlank()) {
+            _uiState.update {
+                it.copy(
+                    showExportFormatSheet = false,
+                    statusMessage = "⚠️ Chưa chọn Video MP4 (9:16)! Hãy bấm 'Chọn MP4 9:16' hoặc chọn Xuất MP3."
+                )
+            }
+            return
+        }
 
-    private fun stopPlaybackTicker() {
-        playbackJob?.cancel()
-        stopTtsAudioPlayer()
-    }
-
-    private fun createSpeechMediaPlayer(filePath: String, volume: Float): MediaPlayer {
-        return MediaPlayer().apply {
-            setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build()
+        _uiState.update {
+            it.copy(
+                showExportFormatSheet = false,
+                pendingExportFormat = format,
+                statusMessage = "📺 Đang hiển thị quảng cáo trước khi xuất file ${format.name}..."
             )
-            setDataSource(filePath)
-            prepare()
-            setVolume(volume, volume)
-        }
-    }
-
-    private fun syncAudioPlaybackWithPlayhead(
-        playheadMs: Long,
-        isPlaying: Boolean,
-        forceSeek: Boolean = false
-    ) {
-        if (!isPlaying) {
-            stopTtsAudioPlayer()
-            return
         }
 
-        val activeClip = _uiState.value.voiceClips.lastOrNull {
-            playheadMs >= it.timelineStartMs && playheadMs < it.timelineEndMs
-        }
-        if (activeClip == null) {
-            stopTtsAudioPlayer()
-            return
-        }
-
-        val relativeClipOffsetMs = (playheadMs - activeClip.timelineStartMs).coerceAtLeast(0L)
-        val targetOffsetMs = (activeClip.trimStartMs + relativeClipOffsetMs).toInt()
-        val existingMp = activeTtsMediaPlayer
-        val needsRestart = activeClipPlayingId != activeClip.id || forceSeek || existingMp == null
-
-        if (needsRestart) {
-            stopTtsAudioPlayer()
-            val file = File(activeClip.audioFilePath)
-            if (file.exists() && file.length() > 64L) {
-                runCatching {
-                    val mp = createSpeechMediaPlayer(file.absolutePath, activeClip.volume)
-                    // Không gọi seekTo ở 0..160ms đầu file khi chưa cắt đầu (trimStartMs == 0)
-                    // để tránh Android MediaPlayer/AudioTrack xả buffer làm mất các chữ cái đầu tiên!
-                    if (activeClip.trimStartMs > 0L || relativeClipOffsetMs > 160L) {
-                        mp.seekTo(targetOffsetMs)
-                    }
-                    mp.start()
-                    activeTtsMediaPlayer = mp
-                    activeClipPlayingId = activeClip.id
+        adManager.triggerAdBeforeExport(
+            activity = activity,
+            onAdCompleted = {
+                executeExportAfterAd(format)
+            },
+            onShowFallbackAdOverlay = {
+                _uiState.update {
+                    it.copy(
+                        showFallbackExportAdDialog = true,
+                        pendingExportFormat = format
+                    )
                 }
             }
-        } else if (existingMp != null) {
-            // Cắt chính xác khi chạm mép cắt đuôi trimEndMs của đoạn Voice đã tách
-            runCatching {
-                if (existingMp.isPlaying && existingMp.currentPosition >= activeClip.trimEndMs.toInt()) {
-                    stopTtsAudioPlayer()
-                }
-            }
-        }
+        )
     }
 
-    private fun stopTtsAudioPlayer() {
-        runCatching {
-            activeTtsMediaPlayer?.let { mp ->
-                if (mp.isPlaying) mp.stop()
-                mp.release()
-            }
+    fun completeFallbackExportAd() {
+        val format = _uiState.value.pendingExportFormat ?: ExportFormat.MP4
+        _uiState.update {
+            it.copy(
+                showFallbackExportAdDialog = false,
+                pendingExportFormat = null
+            )
         }
-        activeTtsMediaPlayer = null
-        activeClipPlayingId = null
+        executeExportAfterAd(format)
     }
 
-    fun exportFinalVideo(@Suppress("UNUSED_PARAMETER") activity: Activity? = null) {
+    private fun executeExportAfterAd(format: ExportFormat) {
         val state = _uiState.value
         viewModelScope.launch {
             _uiState.update {
                 it.copy(
                     isExportingVideo = true,
-                    statusMessage = "⏳ Đang kết xuất Video 9:16 + Voice + Phụ đề + Text + Logo PNG..."
+                    exportedMp4Path = null,
+                    statusMessage = if (format == ExportFormat.MP3) {
+                        "⏳ Đang xuất file âm thanh MP3..."
+                    } else {
+                        "⏳ Đang xuất file Video MP4 9:16..."
+                    }
                 )
             }
 
-            val exportDir = File(getApplication<Application>().getExternalFilesDir(null), "exports").apply { mkdirs() }
-            val srtFile = File(exportDir, "LangKinhHuKhong_Subtitles.srt")
-            exportManager.exportSyncedSrtFile(state.voiceClips, srtFile)
-
-            if (state.videoTrack.videoUri.isBlank()) {
-                _uiState.update {
-                    it.copy(
-                        isExportingVideo = false,
-                        statusMessage = "Đã lưu file phụ đề (${srtFile.name}). Hãy bấm 'Nạp MP4 9:16' để xuất Video!"
-                    )
-                }
-                return@launch
+            val result: Result<File> = if (format == ExportFormat.MP3) {
+                videoExportManager.exportProjectToMp3(
+                    voiceClips = state.voiceClips,
+                    secondaryMp3Clips = state.secondaryMp3Clips
+                )
+            } else {
+                videoExportManager.exportProjectToMp4(
+                    videoTrack = state.videoTrack,
+                    voiceClips = state.voiceClips,
+                    secondaryMp3Clips = state.secondaryMp3Clips,
+                    textOverlays = state.textOverlays,
+                    imageOverlays = state.imageOverlays,
+                    subtitleConfig = state.subtitleConfig
+                )
             }
 
-            val result = exportManager.exportProjectToMp4(
-                videoTrack = state.videoTrack,
-                voiceClips = state.voiceClips,
-                secondaryMp3Clips = state.secondaryMp3Clips,
-                textOverlays = state.textOverlays,
-                imageOverlays = state.imageOverlays,
-                subtitleStyle = state.subtitleStyle
-            )
-
-            result.onSuccess { mp4File ->
+            result.onSuccess { outFile ->
+                adManager.recordExportSuccess()
                 _uiState.update {
                     it.copy(
                         isExportingVideo = false,
-                        statusMessage = "✅ Đã xuất Video: ${mp4File.absolutePath}"
+                        exportedMp4Path = outFile.absolutePath,
+                        statusMessage = "✅ Đã xuất ${format.name}: ${outFile.name} (Đã lưu vào mục Downloads)"
                     )
                 }
             }.onFailure { err ->
                 _uiState.update {
                     it.copy(
                         isExportingVideo = false,
-                        statusMessage = "Đã xuất ${srtFile.name} (Lưu ý MP4: ${err.message})"
+                        statusMessage = "⚠️ Lỗi xuất ${format.name}: ${err.message}"
                     )
                 }
             }
         }
     }
 
-    override fun onCleared() {
-        super.onCleared()
-        stopPlaybackTicker()
-        ttsEngine.release()
-    }
-
-    companion object {
-        fun formatMs(ms: Long): String {
-            val totalTenths = (ms.coerceAtLeast(0L)) / 100
-            val tenths = totalTenths % 10
-            val totalSeconds = totalTenths / 10
-            val seconds = totalSeconds % 60
-            val minutes = totalSeconds / 60
-            return String.format("%02d:%02d.%d", minutes, seconds, tenths)
-        }
+    private fun formatMs(ms: Long): String {
+        val totalSec = ms / 1000.0
+        return "%.1fs".format(totalSec)
     }
 }

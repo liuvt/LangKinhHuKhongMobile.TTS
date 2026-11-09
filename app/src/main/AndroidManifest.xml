@@ -14,7 +14,7 @@
 
     <application
         android:allowBackup="true"
-        android:label="Lăng Kính Hư Không TTS"
+        android:label="LKHK.TTS"
         android:supportsRtl="true"
         android:largeHeap="true"
         android:theme="@android:style/Theme.Material.NoActionBar">

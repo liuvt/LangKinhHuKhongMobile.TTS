@@ -508,6 +508,54 @@ data class CanvasImageOverlayItem(
     }
 }
 
+data class VideoSegmentClip(
+    val id: String = UUID.randomUUID().toString(),
+    val label: String = "Video 9:16",
+    val timelineStartMs: Long = 0L,
+    val sourceStartMs: Long = 0L,
+    val sourceEndMs: Long = 30_000L
+) {
+    val sourceDurationMs: Long
+        get() = (sourceEndMs - sourceStartMs).coerceAtLeast(300L)
+
+    fun durationAtSpeedMs(speedMultiplier: Float): Long {
+        return (sourceDurationMs / speedMultiplier.coerceAtLeast(0.25f)).toLong().coerceAtLeast(300L)
+    }
+
+    fun timelineEndAtSpeedMs(speedMultiplier: Float): Long {
+        return timelineStartMs + durationAtSpeedMs(speedMultiplier)
+    }
+
+    fun splitAtTimelineMs(
+        cutTimelineMs: Long,
+        speedMultiplier: Float
+    ): Pair<VideoSegmentClip, VideoSegmentClip>? {
+        val minSliceMs = 300L
+        val endMs = timelineEndAtSpeedMs(speedMultiplier)
+        if (cutTimelineMs <= timelineStartMs + minSliceMs ||
+            cutTimelineMs >= endMs - minSliceMs
+        ) {
+            return null
+        }
+        val relTimelineMs = cutTimelineMs - timelineStartMs
+        val sourceSplitMs = (sourceStartMs + (relTimelineMs * speedMultiplier).toLong())
+            .coerceIn(sourceStartMs + minSliceMs, sourceEndMs - minSliceMs)
+
+        val left = copy(
+            id = UUID.randomUUID().toString(),
+            label = "$label (1)",
+            sourceEndMs = sourceSplitMs
+        )
+        val right = copy(
+            id = UUID.randomUUID().toString(),
+            label = "$label (2)",
+            timelineStartMs = cutTimelineMs,
+            sourceStartMs = sourceSplitMs
+        )
+        return left to right
+    }
+}
+
 data class ShortVideoTrack(
     val videoUri: String,
     val displayName: String,
@@ -517,17 +565,33 @@ data class ShortVideoTrack(
     val width: Int = 1080,
     val height: Int = 1920,
     val speedMultiplier: Float = 1.0f,
-    val muteOriginalAudio: Boolean = false
+    val muteOriginalAudio: Boolean = false,
+    val segments: List<VideoSegmentClip> = listOf(
+        VideoSegmentClip(
+            label = displayName,
+            timelineStartMs = 0L,
+            sourceStartMs = trimStartMs,
+            sourceEndMs = trimEndMs
+        )
+    )
 ) {
     val trimmedSourceDurationMs: Long
-        get() = (trimEndMs.coerceAtMost(originalDurationMs) - trimStartMs.coerceAtLeast(0L))
-            .coerceAtLeast(1_000L)
+        get() = if (segments.isNotEmpty()) {
+            segments.sumOf { it.sourceDurationMs }.coerceAtLeast(1_000L)
+        } else {
+            (trimEndMs.coerceAtMost(originalDurationMs) - trimStartMs.coerceAtLeast(0L))
+                .coerceAtLeast(1_000L)
+        }
 
     val effectiveDurationMs: Long
-        get() = (trimmedSourceDurationMs / speedMultiplier).toLong().coerceAtLeast(1_000L)
+        get() = if (segments.isNotEmpty()) {
+            segments.maxOf { it.timelineEndAtSpeedMs(speedMultiplier) }.coerceAtLeast(1_000L)
+        } else {
+            (trimmedSourceDurationMs / speedMultiplier).toLong().coerceAtLeast(1_000L)
+        }
 
     val isTrimmed: Boolean
-        get() = trimStartMs > 0L || trimEndMs < originalDurationMs
+        get() = segments.size > 1 || trimStartMs > 0L || trimEndMs < originalDurationMs
 
     val isPortrait9By16: Boolean
         get() = height > width
