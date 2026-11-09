@@ -1,0 +1,3 @@
+*.onnx binary
+*.aar binary
+app/src/main/assets/espeak-ng-data/** binary

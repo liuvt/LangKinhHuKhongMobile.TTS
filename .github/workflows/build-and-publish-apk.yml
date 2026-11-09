@@ -17,14 +17,16 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Fetch Real ONNX Voice Models from voices-assets branch
+      - name: Fetch Real ONNX Voice Models, Sherpa-ONNX AAR & espeak-ng-data from voices-assets branch
         run: |
           if git ls-remote --exit-code --heads origin voices-assets >/dev/null 2>&1; then
             git fetch origin voices-assets --depth=1
-            git checkout origin/voices-assets -- Voices/
-            ls -lh Voices/*/*.onnx
+            git checkout origin/voices-assets -- Voices/ app/libs/ app/src/main/assets/espeak-ng-data/
+            ls -lh Voices/*/*.onnx app/libs/sherpa-onnx-1.12.40.aar
+            ls -la app/src/main/assets/espeak-ng-data | head -n 15
           else
-            echo "voices-assets branch not found, proceeding with available models"
+            echo "voices-assets branch not found"
+            exit 1
           fi
 
       - name: Set up JDK 17
@@ -38,14 +40,19 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Download Sherpa-ONNX v1.12.40 AAR (with Piper eSpeak-ng JNI) & espeak-ng-data
+      - name: Verify Sherpa-ONNX v1.12.40 AAR & espeak-ng-data
         run: |
-          mkdir -p app/libs app/src/main/assets
-          curl -L --retry 5 -f -o app/libs/sherpa-onnx-1.12.40.aar \
-            "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.12.40/sherpa-onnx-1.12.40.aar"
-          curl -L --retry 5 -f -o /tmp/espeak-ng-data.tar.bz2 \
-            "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/espeak-ng-data.tar.bz2"
-          tar -xjf /tmp/espeak-ng-data.tar.bz2 -C app/src/main/assets
+          if [ ! -f app/libs/sherpa-onnx-1.12.40.aar ]; then
+            mkdir -p app/libs
+            curl -L --retry 8 --retry-all-errors --retry-delay 5 -f -o app/libs/sherpa-onnx-1.12.40.aar \
+              "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.12.40/sherpa-onnx-1.12.40.aar"
+          fi
+          if [ ! -d app/src/main/assets/espeak-ng-data ]; then
+            mkdir -p app/src/main/assets
+            curl -L --retry 8 --retry-all-errors --retry-delay 5 -f -o /tmp/espeak-ng-data.tar.bz2 \
+              "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/espeak-ng-data.tar.bz2"
+            tar -xjf /tmp/espeak-ng-data.tar.bz2 -C app/src/main/assets
+          fi
           ls -lh app/libs/sherpa-onnx-1.12.40.aar
           ls -la app/src/main/assets/espeak-ng-data | head -n 15
 
